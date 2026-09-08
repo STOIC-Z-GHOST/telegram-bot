@@ -19,7 +19,7 @@ export default async function handler(req, res) {
   }
 
   if (isOwner(user.id)) {
-    res.status(200).json({ isOwner: true });
+    res.status(200).json({ isOwner: true, maxImagesPerMessage: TIER_LIMITS.premium.maxImagesPerMessage });
     return;
   }
 
@@ -36,5 +36,6 @@ export default async function handler(req, res) {
     maxTokens: limits.maxTokens,
     imagesLast30Days,
     imageGenPerMonth: limits.imageGenPerMonth,
+    maxImagesPerMessage: limits.maxImagesPerMessage,
   });
 }

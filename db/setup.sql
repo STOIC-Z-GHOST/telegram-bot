@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS messages (
   attachment_url TEXT,
   attachment_name TEXT,
   attachment_type TEXT,
+  attachments JSONB,
   created_at TIMESTAMP NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS messages_chat_id_idx ON messages(chat_id);

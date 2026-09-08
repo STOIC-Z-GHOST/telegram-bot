@@ -141,15 +141,25 @@ store from file uploads above.
 ### File / photo uploads
 
 Tap 📎 in the composer to attach an image, PDF, `.docx`, or `.txt` file —
-same set of types the DM bot reads, same 50MB cap non-owner users get
-everywhere else.
+same set of types the DM bot reads. Multiple **images** can be selected
+together (Gemini looks at all of them in one call) — the count allowed at
+once and the file-size cap both scale with plan tier (see "Plans and
+limits" below). PDF/.docx/.txt still work one at a time only — Gemini's
+multi-image support is specific to images, and combining several documents
+into one analysis isn't the same kind of request.
+
+Images are also downscaled before they're sent (to at most ~1568px on the
+longest side, via `lib/imageResize.js`) — a phone photo doesn't need
+anywhere near its original resolution for Gemini to read it, and sending
+less data means a faster reply.
 
 **Why this needed its own storage:** Vercel serverless functions cap a
-request body at 4.5MB — far below 50MB — so the file can't be POSTed
-through one of our own API routes. Instead, the browser uploads directly
-to **Vercel Blob** storage, and `api/miniapp/blob-upload.js` only ever
-issues a short-lived, size/type-limited upload token — the file bytes
-never pass through our server on the way up.
+request body at 4.5MB — far below even the Free tier's 50MB cap — so a
+file can't be POSTed through one of our own API routes. Instead, the
+browser uploads directly to **Vercel Blob** storage, and
+`api/miniapp/blob-upload.js` only ever issues a short-lived, size/type-
+limited upload token — the file bytes never pass through our server on
+the way up.
 
 Setup:
 
@@ -218,8 +228,22 @@ owner, are exempt from all of it:
 | Messages/hour | 20 | 100 | ~1000 (effectively unlimited) |
 | Token allowance | 100,000 lifetime | 1,000,000 lifetime | 10,000,000 lifetime |
 | File size cap | 50MB | 200MB | 500MB |
+| Images per message | 5 | 10 | 20 |
+| Attachments per chat (lifetime) | 20 | 100 | 100,000 (~"almost no limit") |
 | Image generations | 3 / 30 days | 10 / 30 days | ~1000 / 30 days |
 | Video generation | 🚧 under production — see note below | | |
+
+Worth knowing on "images per message": Gemini's own technical ceiling is
+much higher than any of these numbers (thousands of images, bounded mainly
+by a 20MB total request size) — these tiers are sized for a snappy reply,
+not to chase Gemini's actual max. Since images already get downscaled
+before sending (see "File / photo uploads" above), even Premium's 20 sits
+comfortably under that 20MB ceiling in practice.
+
+"Attachments per chat" is a lifetime count for that one chat thread, not
+the user's overall usage — a heavy chat never eats into any of their other
+chats' allowance. It counts both new multi-image messages and any older
+single-attachment messages sent before this was added.
 
 `/plans` (any user) or the "Compare plans" button in the mini app's
 Settings shows this same table live, pulled directly from `TIER_LIMITS` so

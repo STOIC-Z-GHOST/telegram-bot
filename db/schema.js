@@ -4,7 +4,7 @@
 // switch between in the mini app; a "message" belongs to exactly one chat
 // and holds either the user's turn or the assistant's reply, in order.
 
-import { pgTable, serial, integer, bigint, text, timestamp, boolean, index } from "drizzle-orm/pg-core";
+import { pgTable, serial, integer, bigint, text, timestamp, boolean, jsonb, index } from "drizzle-orm/pg-core";
 
 export const chats = pgTable(
   "chats",
@@ -57,12 +57,16 @@ export const messages = pgTable(
       .references(() => chats.id, { onDelete: "cascade" }),
     role: text("role").notNull(), // "user" | "assistant"
     content: text("content").notNull(),
-    // Optional — set only on a user message that included an upload. The
-    // file itself lives in Vercel Blob; this just points at it so the
-    // bubble can render a thumbnail/file chip later.
+    // Legacy single-attachment fields — kept only so messages sent before
+    // multi-image support still render correctly. New messages use
+    // `attachments` below instead, even for a single file.
     attachmentUrl: text("attachment_url"),
     attachmentName: text("attachment_name"),
     attachmentType: text("attachment_type"),
+    // Up to 5 images together, or a single PDF/.docx/.txt — an array of
+    // { url, name, type } objects. The file itself lives in Vercel Blob;
+    // this just points at it so the bubble can render thumbnails later.
+    attachments: jsonb("attachments"),
     createdAt: timestamp("created_at").notNull().defaultNow(),
   },
   (table) => ({

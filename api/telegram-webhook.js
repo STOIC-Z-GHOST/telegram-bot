@@ -444,10 +444,12 @@ async function buildPlanComparisonText() {
     row("Msgs/hr", free.messagesPerHour, pro.messagesPerHour, `~${premium.messagesPerHour}`),
     row("Tokens", fmtTokens(free.maxTokens), fmtTokens(pro.maxTokens), fmtTokens(premium.maxTokens)),
     row("Files", fmtMB(free.maxFileBytes), fmtMB(pro.maxFileBytes), fmtMB(premium.maxFileBytes)),
+    row("Imgs/msg", free.maxImagesPerMessage, pro.maxImagesPerMessage, premium.maxImagesPerMessage),
+    row("Attach/chat", free.maxAttachmentsPerChat, pro.maxAttachmentsPerChat, `~${premium.maxAttachmentsPerChat}`),
     row("Images/mo", free.imageGenPerMonth, pro.imageGenPerMonth, `~${premium.imageGenPerMonth}`),
   ];
 
-  return `<pre>${lines.join("\n")}</pre>\n\n🎬 Video generation — 🚧 under production, coming to paid plans once there are real subscribers.`;
+  return `<pre>${lines.join("\n")}</pre>\n\n📎 Multi-image messages (Imgs/msg) are a mini app feature — the DM bot still takes one photo per message.\n\n🎬 Video generation — 🚧 under production, coming to paid plans once there are real subscribers.`;
 }
 
 // A Stars invoice with subscription_period set bills every 30 days

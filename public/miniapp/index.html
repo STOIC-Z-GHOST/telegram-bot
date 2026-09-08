@@ -356,16 +356,21 @@
     padding: 6px 4px;
     flex-shrink: 0;
   }
+  .attachment-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin: 0 10px 6px;
+  }
   .attachment-chip {
     display: flex;
     align-items: center;
-    justify-content: space-between;
-    gap: 8px;
-    margin: 0 10px 6px;
-    padding: 7px 12px;
+    gap: 6px;
+    padding: 6px 10px;
+    max-width: 160px;
     background: var(--secondary-bg);
     border-radius: 10px;
-    font-size: 13px;
+    font-size: 12.5px;
   }
   .attachment-chip span {
     overflow: hidden;
@@ -386,6 +391,20 @@
     border-radius: 10px;
     display: block;
     margin-bottom: 6px;
+  }
+  .bubble-attachment-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 4px;
+    margin-bottom: 6px;
+  }
+  .bubble-attachment-grid img {
+    width: 100%;
+    height: 100%;
+    aspect-ratio: 1;
+    object-fit: cover;
+    border-radius: 8px;
+    display: block;
   }
   .bubble-attachment-file {
     font-size: 13px;
@@ -626,13 +645,10 @@
       <h1 id="chat-title">Chat</h1>
     </header>
     <div id="messages" class="messages"></div>
-    <div id="attachment-chip" class="attachment-chip" hidden>
-      <span id="attachment-chip-name"></span>
-      <button type="button" id="remove-attachment-btn" aria-label="Remove attachment">✕</button>
-    </div>
+    <div id="attachment-chips" class="attachment-chips" hidden></div>
     <form id="composer" class="composer">
       <button type="button" id="attach-btn" class="icon-btn" aria-label="Attach file">📎</button>
-      <input type="file" id="file-input" accept="image/*,application/pdf,.docx,.txt" hidden />
+      <input type="file" id="file-input" accept="image/*,application/pdf,.docx,.txt" multiple hidden />
       <textarea id="input" placeholder="Message" rows="1"></textarea>
       <button id="send-btn" class="send-btn" type="submit" aria-label="Send">➤</button>
     </form>
@@ -736,7 +752,7 @@
   // Edit this to your bot's real display name — it drives the splash
   // screen, the menu header, and the page title. The logo itself is
   // public/logo.jpg, referenced directly in the HTML below.
-  const BOT_NAME = "AssistAI";
+  const BOT_NAME = "NF Assistant";
 
   const tg = window.Telegram?.WebApp;
   tg?.ready();
@@ -766,9 +782,7 @@
   const sendBtn = document.getElementById("send-btn");
   const attachBtn = document.getElementById("attach-btn");
   const fileInputEl = document.getElementById("file-input");
-  const attachmentChipEl = document.getElementById("attachment-chip");
-  const attachmentChipNameEl = document.getElementById("attachment-chip-name");
-  const removeAttachmentBtn = document.getElementById("remove-attachment-btn");
+  const attachmentChipsEl = document.getElementById("attachment-chips");
   const newChatBtn = document.getElementById("new-chat-fab");
   const backBtn = document.getElementById("back-btn");
   const menuBtn = document.getElementById("menu-btn");
@@ -806,7 +820,8 @@
   document.getElementById("menu-bot-name").textContent = BOT_NAME;
 
   let activeChatId = null;
-  let pendingFile = null;
+  let pendingFiles = [];
+  let maxImagesPerMessage = 5; // sensible default until loadImageLimit() fetches the real per-tier value
 
   async function apiFetch(path, options = {}) {
     const resp = await fetch(path, {
@@ -1051,6 +1066,7 @@
   async function loadUsage() {
     try {
       const data = await apiFetch("/api/miniapp/usage");
+      if (data.maxImagesPerMessage) maxImagesPerMessage = data.maxImagesPerMessage;
       if (data.isOwner) {
         menuUsageEl.hidden = true;
         upgradeSectionEl.hidden = true;
@@ -1098,6 +1114,8 @@
           <tr><td>Msgs/hr</td><td>${free.messagesPerHour}</td><td>${pro.messagesPerHour}</td><td>~${premium.messagesPerHour}</td></tr>
           <tr><td>Tokens</td><td>${tok(free.maxTokens)}</td><td>${tok(pro.maxTokens)}</td><td>${tok(premium.maxTokens)}</td></tr>
           <tr><td>Files</td><td>${mb(free.maxFileBytes)}</td><td>${mb(pro.maxFileBytes)}</td><td>${mb(premium.maxFileBytes)}</td></tr>
+          <tr><td>Imgs/msg</td><td>${free.maxImagesPerMessage}</td><td>${pro.maxImagesPerMessage}</td><td>${premium.maxImagesPerMessage}</td></tr>
+          <tr><td>Attach/chat</td><td>${free.maxAttachmentsPerChat}</td><td>${pro.maxAttachmentsPerChat}</td><td>~${premium.maxAttachmentsPerChat}</td></tr>
           <tr><td>Images/mo</td><td>${free.imageGenPerMonth}</td><td>${pro.imageGenPerMonth}</td><td>~${premium.imageGenPerMonth}</td></tr>
         </table>
         <div class="plan-table-note">🎬 Video generation — 🚧 under production, coming to paid plans once there are real subscribers.</div>`;
@@ -1285,23 +1303,40 @@
       `<div class="auth-error">Couldn't load your chats — open this from the bot inside Telegram.<br><br>(${message})</div>`;
   }
 
-  function renderBubble(role, content, attachment) {
+  function renderBubble(role, content, attachments) {
     const el = document.createElement("div");
     el.className = `bubble ${role}`;
 
-    if (attachment) {
-      if (attachment.type && attachment.type.startsWith("image/") && attachment.url) {
+    const list = Array.isArray(attachments) ? attachments : attachments ? [attachments] : [];
+    const images = list.filter((a) => a.type && a.type.startsWith("image/") && a.url);
+    const nonImagesOrPending = list.filter((a) => !(a.type && a.type.startsWith("image/") && a.url));
+
+    if (images.length === 1) {
+      const img = document.createElement("img");
+      img.className = "bubble-attachment-image";
+      img.src = images[0].url;
+      img.alt = images[0].name || "";
+      el.appendChild(img);
+    } else if (images.length > 1) {
+      const grid = document.createElement("div");
+      grid.className = "bubble-attachment-grid";
+      for (const a of images) {
         const img = document.createElement("img");
-        img.className = "bubble-attachment-image";
-        img.src = attachment.url;
-        img.alt = attachment.name || "";
-        el.appendChild(img);
-      } else {
-        const chip = document.createElement("div");
-        chip.className = "bubble-attachment-file";
-        chip.textContent = `📎 ${attachment.name || "file"}`;
-        el.appendChild(chip);
+        img.src = a.url;
+        img.alt = a.name || "";
+        grid.appendChild(img);
       }
+      el.appendChild(grid);
+    }
+
+    // Non-image files, and images still mid-upload (no URL yet) — shown as
+    // a filename chip rather than an image, since there's nothing to
+    // preview yet in the pending case.
+    for (const a of nonImagesOrPending) {
+      const chip = document.createElement("div");
+      chip.className = "bubble-attachment-file";
+      chip.textContent = `📎 ${a.name || "file"}`;
+      el.appendChild(chip);
     }
 
     if (content) {
@@ -1334,10 +1369,10 @@
     try {
       const history = await apiFetch(`/api/miniapp/messages?chatId=${chatId}`);
       for (const m of history) {
-        const attachment = m.attachmentUrl
-          ? { url: m.attachmentUrl, name: m.attachmentName, type: m.attachmentType }
-          : null;
-        renderBubble(m.role, m.content, attachment);
+        const attachments = m.attachments || (m.attachmentUrl
+          ? [{ url: m.attachmentUrl, name: m.attachmentName, type: m.attachmentType }]
+          : null);
+        renderBubble(m.role, m.content, attachments);
       }
       scrollMessagesToBottom();
     } catch (err) {
@@ -1365,24 +1400,49 @@
 
   attachBtn.addEventListener("click", () => fileInputEl.click());
 
+  function renderAttachmentChips() {
+    attachmentChipsEl.innerHTML = "";
+    attachmentChipsEl.hidden = pendingFiles.length === 0;
+    pendingFiles.forEach((file, index) => {
+      const chip = document.createElement("div");
+      chip.className = "attachment-chip";
+      chip.innerHTML = `<span></span><button type="button" aria-label="Remove">✕</button>`;
+      chip.querySelector("span").textContent = file.name;
+      chip.querySelector("button").addEventListener("click", () => {
+        pendingFiles.splice(index, 1);
+        renderAttachmentChips();
+      });
+      attachmentChipsEl.appendChild(chip);
+    });
+  }
+
   fileInputEl.addEventListener("change", () => {
-    const file = fileInputEl.files[0];
-    if (!file) return;
-    if (file.size > 50 * 1024 * 1024) {
-      const msg = "That file's too big — the limit is 50MB.";
+    const files = Array.from(fileInputEl.files || []);
+    if (files.length === 0) return;
+
+    const allImages = files.every((f) => f.type.startsWith("image/"));
+    if (files.length > 1 && !allImages) {
+      const msg = "Only images can be sent together — pick a single PDF/.docx/.txt at a time.";
       tg?.showAlert?.(msg) ?? alert(msg);
       fileInputEl.value = "";
       return;
     }
-    pendingFile = file;
-    attachmentChipNameEl.textContent = file.name;
-    attachmentChipEl.hidden = false;
-  });
+    if (allImages && files.length > maxImagesPerMessage) {
+      const msg = `Up to ${maxImagesPerMessage} images at a time on your plan.`;
+      tg?.showAlert?.(msg) ?? alert(msg);
+      fileInputEl.value = "";
+      return;
+    }
+    const oversized = files.find((f) => f.size > 500 * 1024 * 1024);
+    if (oversized) {
+      const msg = "That file's too big — the limit depends on your plan, up to 500MB.";
+      tg?.showAlert?.(msg) ?? alert(msg);
+      fileInputEl.value = "";
+      return;
+    }
 
-  removeAttachmentBtn.addEventListener("click", () => {
-    pendingFile = null;
-    fileInputEl.value = "";
-    attachmentChipEl.hidden = true;
+    pendingFiles = files;
+    renderAttachmentChips();
   });
 
   inputEl.addEventListener("input", () => {
@@ -1400,8 +1460,8 @@
   composerEl.addEventListener("submit", async (e) => {
     e.preventDefault();
     const text = inputEl.value.trim();
-    const file = pendingFile;
-    if ((!text && !file) || !activeChatId) return;
+    const files = pendingFiles;
+    if ((!text && files.length === 0) || !activeChatId) return;
 
     tg?.HapticFeedback?.impactOccurred?.("light");
     inputEl.value = "";
@@ -1410,51 +1470,49 @@
     attachBtn.disabled = true;
     inputEl.focus({ preventScroll: true }); // re-assert focus immediately, same tick as the tap/Enter that triggered this
 
-    renderBubble("user", text, file ? { name: file.name, type: file.type } : null);
+    const bubbleAttachments = files.map((f) => ({ name: f.name, type: f.type }));
+    renderBubble("user", text, bubbleAttachments);
     const typingEl = renderTypingBubble();
     scrollMessagesToBottom();
 
-    let attachmentFields = {};
+    let uploadedAttachments = [];
     try {
-      if (file) {
+      if (files.length > 0) {
         // Uploads straight to Vercel Blob from the browser — never passes
         // through our own function, so the 4.5MB request-body limit never
-        // applies. blob-upload.js issues the token this call uses.
+        // applies. blob-upload.js issues the token this call uses. All
+        // files upload concurrently, not one at a time.
         //
         // clientPayload carries our Telegram auth through to
         // onBeforeGenerateToken on the server — upload() makes its own
         // internal request to handleUploadUrl and does not forward the
         // X-Telegram-Init-Data header apiFetch() normally attaches, so
         // this is the only reliable way to authenticate this call.
-        const blob = await upload(file.name, file, {
-          access: "public",
-          handleUploadUrl: "/api/miniapp/blob-upload",
-          clientPayload: initData,
-        });
-        attachmentFields = {
-          attachmentUrl: blob.url,
-          attachmentName: file.name,
-          attachmentType: file.type,
-          attachmentBytes: file.size,
-        };
+        uploadedAttachments = await Promise.all(
+          files.map(async (file) => {
+            const blob = await upload(file.name, file, {
+              access: "public",
+              handleUploadUrl: "/api/miniapp/blob-upload",
+              clientPayload: initData,
+            });
+            return { url: blob.url, name: file.name, type: file.type, bytes: file.size };
+          })
+        );
       }
-      pendingFile = null;
+      pendingFiles = [];
       fileInputEl.value = "";
-      attachmentChipEl.hidden = true;
+      renderAttachmentChips();
 
       const reply = await apiFetch("/api/miniapp/messages", {
         method: "POST",
-        body: JSON.stringify({ chatId: activeChatId, content: text, ...attachmentFields }),
+        body: JSON.stringify({ chatId: activeChatId, content: text, attachments: uploadedAttachments }),
       });
       typingEl.remove();
-      const replyAttachment = reply.attachmentUrl
-        ? { url: reply.attachmentUrl, name: reply.attachmentName, type: reply.attachmentType }
-        : null;
-      renderBubble("assistant", reply.content, replyAttachment);
+      renderBubble("assistant", reply.content, reply.attachments || null);
     } catch (err) {
       typingEl.remove();
       renderBubble("error", `Couldn't send that: ${err.message}`);
-      if (!attachmentFields.attachmentUrl) inputEl.value = text; // give the text back if the upload itself never went through
+      if (uploadedAttachments.length === 0) inputEl.value = text; // give the text back if the upload itself never went through
     } finally {
       sendBtn.disabled = false;
       attachBtn.disabled = false;
@@ -1477,6 +1535,7 @@
     setTimeout(hideSplash, MIN_SPLASH_MS);
   } else {
     const started = Date.now();
+    loadUsage(); // fire-and-forget — just needs maxImagesPerMessage set before the composer is used, no reason to block the splash on it
     Promise.race([loadChats(), new Promise((r) => setTimeout(r, MAX_SPLASH_MS))]).finally(() => {
       const elapsed = Date.now() - started;
       setTimeout(hideSplash, Math.max(0, MIN_SPLASH_MS - elapsed));

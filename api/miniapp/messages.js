@@ -1,10 +1,10 @@
 // api/miniapp/messages.js
 //
 // GET  ?chatId=123 -> full message history for that chat
-// POST { chatId, content, attachmentUrl?, attachmentName?, attachmentType?,
-//        attachmentBytes? } -> saves the user's message (with an
-//        attachment if one was uploaded first — see blob-upload.js),
-//        gets an AI reply, saves and returns it
+// POST { chatId, content, attachments? } -> saves the user's message
+//        (attachments is an array of { url, name, type, bytes } — up to 5
+//        images together, or a single PDF/.docx/.txt, uploaded first via
+//        blob-upload.js), gets an AI reply, saves and returns it
 //
 // Two ways to trigger image generation instead of a normal AI reply:
 //   - content starting with "/image <description>" (no attachment) — same
@@ -15,10 +15,11 @@
 //     acted on here, the same technique the memory feature already uses
 //     for its [SAVE_MEMORY: ...] marker.
 //
-// An attachment is analyzed on its own (image/PDF via vision, .docx/.txt
-// via text extraction) plus whatever caption came with it — not folded
-// into the running conversation history/memory machinery, same choice the
-// DM bot already makes for photos and documents.
+// Attachments are analyzed on their own (images via vision — together in
+// one call if there's more than one — PDF/.docx/.txt via text extraction)
+// plus whatever caption came with them — not folded into the running
+// conversation history/memory machinery, same choice the DM bot already
+// makes for photos and documents.
 //
 // Every chat is checked against the calling Telegram user's id before any
 // read or write — there's no way to touch a chat that isn't yours, even if
@@ -30,10 +31,18 @@ import { db } from "../../db/client.js";
 import { chats, messages } from "../../db/schema.js";
 import { requireTelegramUser } from "../../lib/telegramAuth.js";
 import { getConversationReply } from "../../lib/ai.js";
-import { analyzeAttachment } from "../../lib/attachments.js";
+import { analyzeAttachments } from "../../lib/attachments.js";
 import { generateImage, extractImageGenMarker } from "../../lib/imagegen.js";
 import { isMemoryEnabled, listMemories, saveMemory, extractMemoryMarker, MEMORY_LIMIT } from "../../lib/memory.js";
-import { checkMessageLimit, recordMessageUsage, recordFileUsage, checkImageGenLimit, recordImageUsage } from "../../lib/limits.js";
+import {
+  checkMessageLimit,
+  recordMessageUsage,
+  recordFileUsage,
+  checkImageGenLimit,
+  recordImageUsage,
+  checkImageCountLimit,
+  checkChatAttachmentLimit,
+} from "../../lib/limits.js";
 
 async function loadOwnedChat(chatId, telegramUserId) {
   const [chat] = await db
@@ -79,9 +88,7 @@ async function generateAndSaveImage(res, chat, userId, prompt) {
       chatId: chat.id,
       role: "assistant",
       content: assistantContent,
-      attachmentUrl: attachment?.url || null,
-      attachmentName: attachment?.name || null,
-      attachmentType: attachment?.type || null,
+      attachments: attachment ? [attachment] : null,
     })
     .returning();
 
@@ -118,12 +125,13 @@ export default async function handler(req, res) {
   }
 
   if (req.method === "POST") {
-    const { chatId, content, attachmentUrl, attachmentName, attachmentType, attachmentBytes } = req.body || {};
-    const hasAttachment = !!attachmentUrl;
+    const { chatId, content, attachments: rawAttachments } = req.body || {};
+    const attachments = Array.isArray(rawAttachments) ? rawAttachments : [];
+    const hasAttachment = attachments.length > 0;
     const trimmedContent = (content || "").trim();
 
     if (!chatId || (!trimmedContent && !hasAttachment)) {
-      res.status(400).json({ error: "chatId and content (or an attachment) are required" });
+      res.status(400).json({ error: "chatId and content (or at least one attachment) are required" });
       return;
     }
 
@@ -142,6 +150,25 @@ export default async function handler(req, res) {
       return;
     }
 
+    // Tier-aware: how many images in this one message, and this chat's
+    // running lifetime total — both checked before spending anything on
+    // download/analysis.
+    if (hasAttachment) {
+      const allImages = attachments.every((a) => (a.type || "").startsWith("image/"));
+      if (allImages) {
+        const countCheck = await checkImageCountLimit(user.id, attachments.length);
+        if (!countCheck.allowed) {
+          res.status(429).json({ error: "rate_limited", message: countCheck.reason });
+          return;
+        }
+      }
+      const chatLimitCheck = await checkChatAttachmentLimit(user.id, chat.id, attachments.length);
+      if (!chatLimitCheck.allowed) {
+        res.status(429).json({ error: "rate_limited", message: chatLimitCheck.reason });
+        return;
+      }
+    }
+
     const imageMatch = !hasAttachment && trimmedContent.match(/^\/(image|img)\s+([\s\S]+)/i);
     const isBareImageCommand = !hasAttachment && /^\/(image|img)$/i.test(trimmedContent);
 
@@ -150,15 +177,15 @@ export default async function handler(req, res) {
       return;
     }
 
-    const displayContent = trimmedContent || (hasAttachment ? `📎 ${attachmentName}` : "");
+    const displayContent = trimmedContent || (hasAttachment
+      ? (attachments.length > 1 ? `📎 ${attachments.length} images` : `📎 ${attachments[0].name}`)
+      : "");
 
     await db.insert(messages).values({
       chatId: chat.id,
       role: "user",
       content: displayContent,
-      attachmentUrl: hasAttachment ? attachmentUrl : null,
-      attachmentName: hasAttachment ? attachmentName : null,
-      attachmentType: hasAttachment ? attachmentType : null,
+      attachments: hasAttachment ? attachments : null,
     });
 
     // --- Image generation ("/image <description>") ---
@@ -173,10 +200,11 @@ export default async function handler(req, res) {
     let rawReply, tokensUsed;
 
     if (hasAttachment) {
-      const result = await analyzeAttachment(attachmentUrl, attachmentName, attachmentType, trimmedContent);
+      const result = await analyzeAttachments(attachments, trimmedContent);
       rawReply = result.text;
       tokensUsed = result.tokensUsed;
-      await recordFileUsage(user.id, attachmentBytes || null);
+      const totalBytes = attachments.reduce((sum, a) => sum + (a.bytes || 0), 0);
+      await recordFileUsage(user.id, totalBytes || null);
     } else {
       const history = await db
         .select()
@@ -214,7 +242,7 @@ export default async function handler(req, res) {
     // save it and strip the marker out before anyone sees it. If memory's
     // already full, don't save — just say so, rather than silently
     // dropping what they asked to keep. (Attachments never trigger this —
-    // analyzeAttachment doesn't pass allowMemorySave — so savedFact is
+    // analyzeAttachments doesn't pass allowMemorySave — so savedFact is
     // always null on that path.)
     let { visibleReply, savedFact } = extractMemoryMarker(rawReply);
     if (savedFact) {
@@ -234,7 +262,7 @@ export default async function handler(req, res) {
     // chat" entries — combined into one UPDATE instead of two round trips.
     const titleFields = chat.title === "New chat"
       ? (() => {
-          const titleSource = trimmedContent || attachmentName || "New chat";
+          const titleSource = trimmedContent || (hasAttachment ? attachments[0].name : null) || "New chat";
           return { title: titleSource.length > 40 ? `${titleSource.slice(0, 40)}…` : titleSource };
         })()
       : {};
