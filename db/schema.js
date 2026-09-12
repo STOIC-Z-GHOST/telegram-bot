@@ -111,6 +111,25 @@ export const usageEvents = pgTable(
   })
 );
 
+// Referral ladder — one row per successfully-referred user. referredId is
+// unique so a user can only ever be credited to the one referrer who first
+// sent them here; creditedAt stays null until that user sends their first
+// real message (not just the /start click), which is what actually counts
+// toward the referrer's ladder — see lib/referrals.js for the tiers.
+export const referrals = pgTable(
+  "referrals",
+  {
+    id: serial("id").primaryKey(),
+    referrerId: bigint("referrer_id", { mode: "number" }).notNull(),
+    referredId: bigint("referred_id", { mode: "number" }).notNull().unique(),
+    creditedAt: timestamp("credited_at"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (table) => ({
+    referrerIdx: index("referrals_referrer_id_idx").on(table.referrerId),
+  })
+);
+
 // One row per Telegram user who has ever subscribed. A missing row (or a
 // row whose expiresAt has passed) means "free tier" — there's no explicit
 // cancellation flow to handle: Telegram's own subscription UI lets a user

@@ -199,24 +199,25 @@ both work.
 
 ## Access control
 
-Access is request-based, not a fixed list you have to redeploy to change:
+The bot is public — anyone can message it and land on the Free tier
+immediately, no approval needed:
 
 - **You (`OWNER_CHAT_ID`)** always have full access, and are the only one
-  who can approve, deny, or later remove anyone else.
-- **Anyone else** who messages the bot for the first time gets a "Request
-  Access" button. Tapping it asks them for a short reason; once they reply,
-  you get a DM with their name, chat ID, and reason, plus **Approve** /
-  **Deny** buttons.
+  who can ban or unban anyone else.
+- **Anyone else** who messages the bot for the first time is auto-approved
+  on the spot and starts using it right away, on Free tier limits.
 - **Approved** users can use the DM chat and the mini app — the mini app
   checks the same access list, so approval on one covers both.
-- **Denied** users get a "Request Again" button rather than a dead end.
+- **Banned** users (via `/remove`) get a flat "access revoked" message —
+  no self-serve way back in; they'd need to reach out to you directly.
 - **`/users`** (you only) lists everyone currently approved, each with a
-  one-tap **Remove** button — this revokes access; they'd need to request
-  again to come back.
+  one-tap **Remove** button — this bans them.
 
 All of this lives in `access_requests` in Neon (see `db/schema.js` and
 `lib/access.js`) — shared between the DM bot and the mini app, so there's
-one access list, not two that could drift out of sync.
+one access list, not two that could drift out of sync. The table name and
+status lifecycle (`approved` / `denied`) are left over from when this was
+an invite-only bot with manual review; `denied` now just means "banned."
 
 ## Plans and limits
 
@@ -225,13 +226,18 @@ owner, are exempt from all of it:
 
 | | Free | Pro (300 ⭐/mo) | Premium (600 ⭐/mo) |
 |---|---|---|---|
-| Messages/hour | 20 | 100 | ~1000 (effectively unlimited) |
-| Token allowance | 100,000 lifetime | 1,000,000 lifetime | 10,000,000 lifetime |
-| File size cap | 50MB | 200MB | 500MB |
+| Messages | 15 / day | 100 / hour | 1000 / hour (shown to users as "Unlimited") |
+| Token allowance | 20,000 lifetime | 1,000,000 lifetime | 10,000,000 lifetime |
+| File size cap | 5MB | 200MB | 500MB |
 | Images per message | 5 | 10 | 20 |
-| Attachments per chat (lifetime) | 20 | 100 | 100,000 (~"almost no limit") |
-| Image generations | 3 / 30 days | 10 / 30 days | ~1000 / 30 days |
+| Attachments per chat (lifetime) | 2 | 100 | 100,000 (shown to users as "Unlimited") |
+| Image generations | 3 / 30 days | 10 / 30 days | 1000 / 30 days (shown to users as "Unlimited") |
 | Video generation | 🚧 under production — see note below | | |
+
+Free's numbers above are the *base* tier — a given free user's actual
+limits are usually higher once their referral bonus is added in (see
+"Referrals" below). `limitsFor()` in `lib/limits.js` is what returns the
+real, referral-adjusted numbers; `TIER_LIMITS` is just the base table.
 
 Worth knowing on "images per message": Gemini's own technical ceiling is
 much higher than any of these numbers (thousands of images, bounded mainly
@@ -247,7 +253,41 @@ single-attachment messages sent before this was added.
 
 `/plans` (any user) or the "Compare plans" button in the mini app's
 Settings shows this same table live, pulled directly from `TIER_LIMITS` so
-it can't drift out of sync with what's actually enforced.
+it can't drift out of sync with what's actually enforced. It shows base
+free numbers, not any individual user's referral-boosted ones — `/invite`
+shows a user their own current bonus.
+
+## Referrals
+
+Free users can raise their own limits by inviting friends — `/invite`
+gives them a personal `https://t.me/<bot>?start=ref_<their id>` link (or a
+plain `/start ref_<id>` code if `TELEGRAM_BOT_USERNAME` isn't set).
+Everything lives in `lib/referrals.js`:
+
+- A referral is **pending** the moment someone opens the bot via that
+  link, and becomes **credited** the moment they send their first real
+  message — not just from opening the bot. This is deliberate: it's the
+  difference between someone actually trying the bot and someone who
+  clicked a link and left.
+- Credited referrals unlock a stacking ladder of bonuses on top of the
+  base Free limits (`REFERRAL_TIERS`) — more messages/day at 5 and 15
+  invites, image generations at 15 and 25, attachments/chat at 25 and
+  100, a lifetime token top-up at 35, and file size at 75. It tops out at
+  100 invites, and every number on it is kept well short of Pro on
+  purpose — this rewards social free users, it isn't meant to make paying
+  pointless.
+- The ladder counts only referrals credited in the **last 60 days**
+  (`REFERRAL_WINDOW_DAYS`), not a lifetime total — someone's count quietly
+  drifts down as old invites age out, the same way the hourly/daily
+  message limits already work. Nothing is ever deleted from the
+  `referrals` table; the window only affects what currently counts toward
+  the bonus, not the historical record. There's no reset job anywhere —
+  it's just a different WHERE clause on a query that already existed.
+- A referrer can only have 5 referrals credited per rolling 24 hours
+  (`DAILY_CREDIT_CAP`) — mostly to stop a burst of invites landing at once
+  and jumping someone several tiers in an afternoon, not real fraud
+  prevention (a Telegram account needs a real phone number, which is
+  already meaningful friction on its own).
 
 **How payment works:** `/upgrade` in the DM, or the Upgrade section in the
 mini app's Settings — both create a real Telegram Stars **subscription**
@@ -288,9 +328,9 @@ worth of Pro-tier tokens on its own.
 
 ## Notes
 
-- **Developer credit.** Shows in the `/start` reply and in the access
-  request message, so anyone who finds and starts the bot sees who made it
-  either way.
+- **Product branding.** The `/start` reply signs off with `@assist_ai`
+  instead of a personal name — see `PRODUCT_CREDIT` in
+  `api/telegram-webhook.js` if you want to change it.
 - **Model IDs** (`gemini-3.6-flash`, `openai/gpt-oss-120b`) are current as of Aug 2026.
   If either provider retires a model later, just change the constant near
   the top of `api/telegram-webhook.js`.

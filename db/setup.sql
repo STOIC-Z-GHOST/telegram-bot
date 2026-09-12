@@ -78,3 +78,12 @@ CREATE TABLE IF NOT EXISTS plan_prices (
 
 INSERT INTO plan_prices (tier, price_stars) VALUES ('pro', 300), ('premium', 600)
 ON CONFLICT (tier) DO NOTHING;
+
+CREATE TABLE IF NOT EXISTS referrals (
+  id SERIAL PRIMARY KEY,
+  referrer_id BIGINT NOT NULL,
+  referred_id BIGINT NOT NULL UNIQUE,
+  credited_at TIMESTAMP,
+  created_at TIMESTAMP NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS referrals_referrer_id_idx ON referrals(referrer_id);

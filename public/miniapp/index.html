@@ -319,6 +319,20 @@
     color: var(--text);
     border-bottom-left-radius: 4px;
   }
+  .bubble-copy-btn {
+    display: block;
+    width: fit-content;
+    margin-left: auto;
+    margin-top: 4px;
+    padding: 3px;
+    background: none;
+    border: none;
+    color: inherit;
+    opacity: 0.45;
+    cursor: pointer;
+  }
+  .bubble-copy-btn:active { opacity: 0.9; }
+  .bubble-copy-btn svg { width: 13px; height: 13px; display: block; }
   .bubble.error {
     align-self: center;
     background: transparent;
@@ -820,6 +834,11 @@
   document.getElementById("menu-bot-name").textContent = BOT_NAME;
 
   let activeChatId = null;
+  // True while the chat view is showing a brand-new, not-yet-persisted
+  // chat — see newChatBtn below. Nothing is created server-side until the
+  // first message actually sends, so hitting back on an empty draft never
+  // leaves an empty chat behind in the list.
+  let isDraftChat = false;
   let pendingFiles = [];
   let maxImagesPerMessage = 5; // sensible default until loadImageLimit() fetches the real per-tier value
 
@@ -854,6 +873,7 @@
   function showListView() {
     appEl.classList.remove("chat-active", "settings-active");
     activeChatId = null;
+    isDraftChat = false;
     tg?.BackButton?.hide();
   }
 
@@ -1073,7 +1093,8 @@
         return;
       }
       menuUsageEl.hidden = false;
-      menuUsageMessagesEl.textContent = `${data.messagesLastHour}/${data.messagesPerHourLimit} messages this hour`;
+      const windowLabel = data.messageWindow === "day" ? "today" : "this hour";
+      menuUsageMessagesEl.textContent = `${data.messagesUsed}/${data.messagesLimit} messages ${windowLabel}`;
       menuUsageTokensEl.textContent = `${data.totalTokens.toLocaleString()}/${data.maxTokens.toLocaleString()} tokens used`;
 
       upgradeSectionEl.hidden = false;
@@ -1111,12 +1132,11 @@
         <table class="plan-table">
           <tr><th></th><th>Free</th><th>Pro</th><th>Premium</th></tr>
           <tr><td>Price</td><td>$0</td><td>${plans.prices.pro} ⭐</td><td>${plans.prices.premium} ⭐</td></tr>
-          <tr><td>Msgs/hr</td><td>${free.messagesPerHour}</td><td>${pro.messagesPerHour}</td><td>~${premium.messagesPerHour}</td></tr>
+          <tr><td>Msgs</td><td>${free.messagesPerDay}/day</td><td>${pro.messagesPerHour}/hr</td><td>Unlimited</td></tr>
           <tr><td>Tokens</td><td>${tok(free.maxTokens)}</td><td>${tok(pro.maxTokens)}</td><td>${tok(premium.maxTokens)}</td></tr>
           <tr><td>Files</td><td>${mb(free.maxFileBytes)}</td><td>${mb(pro.maxFileBytes)}</td><td>${mb(premium.maxFileBytes)}</td></tr>
           <tr><td>Imgs/msg</td><td>${free.maxImagesPerMessage}</td><td>${pro.maxImagesPerMessage}</td><td>${premium.maxImagesPerMessage}</td></tr>
-          <tr><td>Attach/chat</td><td>${free.maxAttachmentsPerChat}</td><td>${pro.maxAttachmentsPerChat}</td><td>~${premium.maxAttachmentsPerChat}</td></tr>
-          <tr><td>Images/mo</td><td>${free.imageGenPerMonth}</td><td>${pro.imageGenPerMonth}</td><td>~${premium.imageGenPerMonth}</td></tr>
+          <tr><td>Images/mo</td><td>${free.imageGenPerMonth}</td><td>${pro.imageGenPerMonth}</td><td>Unlimited</td></tr>
         </table>
         <div class="plan-table-note">🎬 Video generation — 🚧 under production, coming to paid plans once there are real subscribers.</div>`;
       planDetailsTableEl.hidden = false;
@@ -1343,10 +1363,59 @@
       const textEl = document.createElement("div");
       textEl.textContent = content;
       el.appendChild(textEl);
+      el.appendChild(renderCopyButton(content));
     }
 
     messagesEl.appendChild(el);
     return el;
+  }
+
+  // Telegram's in-app WebView is unreliable about native text
+  // selection/long-press-to-copy no matter what CSS is set (see the
+  // .bubble comment above) — this sidesteps that entirely with a
+  // guaranteed-to-work copy button instead.
+  function renderCopyButton(text) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "bubble-copy-btn";
+    btn.setAttribute("aria-label", "Copy message");
+    const copyIcon =
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
+    const checkIcon =
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>';
+    btn.innerHTML = copyIcon;
+    btn.addEventListener("click", async () => {
+      try {
+        if (navigator.clipboard?.writeText) {
+          await navigator.clipboard.writeText(text);
+        } else {
+          throw new Error("clipboard API unavailable");
+        }
+      } catch {
+        // Fallback for WebViews that don't expose the Clipboard API.
+        const ta = document.createElement("textarea");
+        ta.value = text;
+        ta.style.position = "fixed";
+        ta.style.opacity = "0";
+        document.body.appendChild(ta);
+        ta.focus();
+        ta.select();
+        try {
+          document.execCommand("copy");
+        } catch {
+          /* nothing more we can do */
+        }
+        document.body.removeChild(ta);
+      }
+      tg?.HapticFeedback?.notificationOccurred?.("success");
+      btn.innerHTML = checkIcon;
+      btn.disabled = true;
+      setTimeout(() => {
+        btn.innerHTML = copyIcon;
+        btn.disabled = false;
+      }, 1200);
+    });
+    return btn;
   }
 
   function renderTypingBubble() {
@@ -1363,6 +1432,7 @@
 
   async function openChat(chatId, title) {
     activeChatId = chatId;
+    isDraftChat = false;
     chatTitleEl.textContent = title;
     messagesEl.innerHTML = "";
     showChatView();
@@ -1381,16 +1451,15 @@
     inputEl.focus();
   }
 
-  newChatBtn.addEventListener("click", async () => {
-    newChatBtn.disabled = true;
-    try {
-      const chat = await apiFetch("/api/miniapp/chats", { method: "POST" });
-      await openChat(chat.id, chat.title);
-    } catch (err) {
-      showAuthError(err.message);
-    } finally {
-      newChatBtn.disabled = false;
-    }
+  newChatBtn.addEventListener("click", () => {
+    // No API call here on purpose — see isDraftChat above. The chat only
+    // actually gets created once the first message sends.
+    activeChatId = null;
+    isDraftChat = true;
+    chatTitleEl.textContent = "New chat";
+    messagesEl.innerHTML = "";
+    showChatView();
+    inputEl.focus();
   });
 
   backBtn.addEventListener("click", () => {
@@ -1461,7 +1530,23 @@
     e.preventDefault();
     const text = inputEl.value.trim();
     const files = pendingFiles;
-    if ((!text && files.length === 0) || !activeChatId) return;
+    if ((!text && files.length === 0) || (!activeChatId && !isDraftChat)) return;
+
+    if (isDraftChat) {
+      // First message in a fresh chat — create the real row now, not back
+      // when + was tapped, so a draft nobody typed into never persists.
+      sendBtn.disabled = true;
+      try {
+        const chat = await apiFetch("/api/miniapp/chats", { method: "POST" });
+        activeChatId = chat.id;
+        isDraftChat = false;
+        chatTitleEl.textContent = chat.title;
+      } catch (err) {
+        sendBtn.disabled = false;
+        renderBubble("error", `Couldn't start this chat: ${err.message}`);
+        return;
+      }
+    }
 
     tg?.HapticFeedback?.impactOccurred?.("light");
     inputEl.value = "";

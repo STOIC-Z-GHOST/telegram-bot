@@ -51,14 +51,24 @@ import {
   isOwner,
   getOwnerChatId,
   getAccessStatus,
+  autoApproveUser,
   startAccessRequest,
   submitAccessReason,
   decideAccessRequest,
   removeUser,
   listApprovedUsers,
 } from "../lib/access.js";
-import { checkMessageLimit, recordMessageUsage, checkImageGenLimit, recordImageUsage, TIER_LIMITS } from "../lib/limits.js";
+import { checkMessageLimit, recordMessageUsage, checkImageGenLimit, recordImageUsage, TIER_LIMITS, limitsFor } from "../lib/limits.js";
 import { getUserTier, activateSubscription, getTierPrices, setTierPrice, MAX_PRICE_STARS, SUBSCRIPTION_PERIOD_SECONDS } from "../lib/subscriptions.js";
+import {
+  referralCodeFor,
+  parseReferralPayload,
+  recordPendingReferral,
+  creditReferralIfPending,
+  getCreditedReferralCount,
+  getReferralBonus,
+  getNextMilestone,
+} from "../lib/referrals.js";
 
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
@@ -68,12 +78,16 @@ const WEBHOOK_SECRET = process.env.TELEGRAM_WEBHOOK_SECRET;
 // mini app is deployed. /start includes an "Open Chat App" button only
 // when this is set, so the bot still works fine without it.
 const MINI_APP_URL = process.env.MINI_APP_URL;
+// Used to build shareable https://t.me/<username>?start=ref_<id> invite
+// links for /invite. Without it, /invite falls back to a plain referral
+// code the friend can paste in manually.
+const BOT_USERNAME = process.env.TELEGRAM_BOT_USERNAME;
 
 // Model IDs current as of Aug 2026 — swap if your account has different access.
 const GEMINI_MODEL = "gemini-3.6-flash";
 const GROQ_MODEL = "openai/gpt-oss-120b"; // Groq's current flagship open model (text only)
 
-const DEVELOPER_CREDIT = "Made by Nahom (NF).";
+const PRODUCT_CREDIT = "🤖 @assist_ai — try it free.";
 
 // Free, no-cost way to noticeably improve answer quality without changing
 // models (the underlying model is already the strongest one available on
@@ -284,9 +298,10 @@ async function sendStartMessage(chatId) {
     text:
       "I'm online — Gemini for chat (Groq backup), /image <description> for pictures, " +
       "send me a photo any time and I'll analyze it, and send me a PDF, .docx, or text " +
-      "file and I'll read it too. Send /upgrade any time to see your current plan and raise your limits." +
+      "file and I'll read it too. Send /upgrade any time to see your current plan and raise your limits, " +
+      "or /invite to earn more free usage by inviting friends." +
       (MINI_APP_URL ? " There's also a proper chat app now, with saved history." : "") +
-      `\n\n${DEVELOPER_CREDIT}`,
+      `\n\n${PRODUCT_CREDIT}`,
   };
   if (MINI_APP_URL) {
     body.reply_markup = {
@@ -428,8 +443,9 @@ async function handleCallbackQuery(cq) {
 // A simple monospace comparison table via HTML's <pre> — Telegram renders
 // this with real column alignment, unlike plain text. Pulled from
 // TIER_LIMITS directly so it can never drift out of sync with the actual
-// enforced limits. Video generation is listed as a row but isn't wired to
-// anything yet; see the README.
+// enforced limits (this shows base tier numbers — a free user's own
+// referral-boosted limits are in /invite, not here). Video generation is
+// listed as a row but isn't wired to anything yet; see the README.
 async function buildPlanComparisonText() {
   const prices = await getTierPrices();
   const { free, pro, premium } = TIER_LIMITS;
@@ -441,15 +457,14 @@ async function buildPlanComparisonText() {
   const lines = [
     row("Plan", "Free", "Pro", "Premium"),
     row("Price", "$0", `${prices.pro} ⭐`, `${prices.premium} ⭐`),
-    row("Msgs/hr", free.messagesPerHour, pro.messagesPerHour, `~${premium.messagesPerHour}`),
+    row("Msgs", `${free.messagesPerDay}/day`, `${pro.messagesPerHour}/hr`, "Unlimited"),
     row("Tokens", fmtTokens(free.maxTokens), fmtTokens(pro.maxTokens), fmtTokens(premium.maxTokens)),
     row("Files", fmtMB(free.maxFileBytes), fmtMB(pro.maxFileBytes), fmtMB(premium.maxFileBytes)),
     row("Imgs/msg", free.maxImagesPerMessage, pro.maxImagesPerMessage, premium.maxImagesPerMessage),
-    row("Attach/chat", free.maxAttachmentsPerChat, pro.maxAttachmentsPerChat, `~${premium.maxAttachmentsPerChat}`),
-    row("Images/mo", free.imageGenPerMonth, pro.imageGenPerMonth, `~${premium.imageGenPerMonth}`),
+    row("Images/mo", free.imageGenPerMonth, pro.imageGenPerMonth, "Unlimited"),
   ];
 
-  return `<pre>${lines.join("\n")}</pre>\n\n📎 Multi-image messages (Imgs/msg) are a mini app feature — the DM bot still takes one photo per message.\n\n🎬 Video generation — 🚧 under production, coming to paid plans once there are real subscribers.`;
+  return `<pre>${lines.join("\n")}</pre>\n\n📎 Multi-image messages (Imgs/msg) are a mini app feature — the DM bot still takes one photo per message.\n\n🔗 Free tier numbers above don't include your own /invite bonus.\n\n🎬 Video generation — 🚧 under production, coming to paid plans once there are real subscribers.`;
 }
 
 // A Stars invoice with subscription_period set bills every 30 days
@@ -588,62 +603,73 @@ export default async function handler(req, res) {
   const text = message.text;
 
   // --- Access gate ---
-  // Owner and approved users fall straight through to normal handling
-  // below. Everyone else is routed through the request/approve/deny flow
-  // instead of a flat "no" — see lib/access.js for the status lifecycle.
+  // The bot is public: anyone not explicitly banned falls straight through
+  // to normal handling below on the free tier, no owner review needed.
+  // "denied" is the one real gate left — it's what /remove (banning a
+  // user) sets, via lib/access.js's decideAccessRequest/removeUser. Any
+  // leftover "awaiting_reason"/"pending" rows from before the bot went
+  // public are treated the same as a first-time visitor and waved through.
   const accessStatus = isOwner(chatId) ? "owner" : await getAccessStatus(chatId);
 
-  if (accessStatus !== "owner" && accessStatus !== "approved") {
-    if (accessStatus === "awaiting_reason") {
-      if (!text || text.startsWith("/")) {
-        await sendTelegramMessage(chatId, "What's the reason you'd like access? Just reply with a short message.");
-      } else {
-        await submitAccessReason(chatId, text);
-        const ownerChatId = getOwnerChatId();
-        if (ownerChatId) {
-          await sendTelegramMessageWithKeyboard(
-            ownerChatId,
-            `📥 Access request\n\nFrom: ${formatDisplayName(message.from)} (${chatId})\nReason: ${text.trim().slice(0, 500)}`,
-            [[
-              { text: "✅ Approve", callback_data: `approve:${chatId}` },
-              { text: "❌ Deny", callback_data: `deny:${chatId}` },
-            ]]
-          );
-        }
-        await sendTelegramMessage(chatId, "Thanks — I've sent your request to the owner. I'll let you know as soon as they respond.");
-      }
-      res.status(200).send("OK");
-      return;
-    }
-
-    if (accessStatus === "pending") {
-      await sendTelegramMessage(chatId, "Your access request is still waiting on the owner — I'll let you know as soon as there's a decision.");
-      res.status(200).send("OK");
-      return;
-    }
-
-    if (accessStatus === "denied") {
-      await sendTelegramMessageWithKeyboard(
-        chatId,
-        "Your previous access request was declined. You're welcome to try again with more detail on why you'd like access.",
-        [[{ text: "🔓 Request Again", callback_data: "request_access" }]]
-      );
-      res.status(200).send("OK");
-      return;
-    }
-
-    // accessStatus === "none" — never requested before.
-    await sendTelegramMessageWithKeyboard(
+  if (accessStatus === "denied") {
+    await sendTelegramMessage(
       chatId,
-      "🤖 This bot was made by Nahom (NF). It's private — but you're welcome to request access below.",
-      [[{ text: "🔓 Request Access", callback_data: "request_access" }]]
+      "Your access to this bot has been revoked. If you think that's a mistake, reach out to the owner directly."
     );
     res.status(200).send("OK");
     return;
   }
 
-  if (text === "/start") {
+  if (accessStatus !== "owner" && accessStatus !== "approved") {
+    // "none", "awaiting_reason", or "pending" — auto-approve and continue
+    // straight into normal handling below, same request.
+    await autoApproveUser(chatId, formatDisplayName(message.from));
+  }
+
+  if (text === "/start" || text?.startsWith("/start ")) {
+    // A referral deep link looks like https://t.me/<bot>?start=ref_12345 —
+    // Telegram delivers that as the text "/start ref_12345". Only the
+    // first link a brand-new user clicks ever sticks (see
+    // recordPendingReferral) — the /start click itself isn't what earns
+    // the referrer credit, though; that happens on this user's next
+    // message, below.
+    const payload = text.length > 6 ? text.slice(6).trim() : "";
+    const referrerId = parseReferralPayload(payload, chatId);
+    if (referrerId) {
+      await recordPendingReferral(referrerId, chatId);
+    }
     await sendStartMessage(chatId);
+    res.status(200).send("OK");
+    return;
+  }
+
+  // Credit any pending referral the moment this user does anything past
+  // the initial /start click — safe to call unconditionally, it's a
+  // no-op once already credited (or if this user was never referred).
+  await creditReferralIfPending(chatId);
+
+  if (text === "/invite") {
+    const creditedCount = await getCreditedReferralCount(chatId);
+    const bonus = getReferralBonus(creditedCount);
+    const nextTier = getNextMilestone(creditedCount);
+    const code = referralCodeFor(chatId);
+    const link = BOT_USERNAME ? `https://t.me/${BOT_USERNAME}?start=${code}` : null;
+
+    const lines = [
+      link
+        ? `📨 Invite friends — they get the bot, you get more free usage:\n${link}`
+        : `📨 Invite friends — have them send this to the bot:\n/start ${code}`,
+      "",
+      `Credited invites (last 60 days): ${creditedCount} — counts once a friend sends their first message, not just opens the bot. This rolls forward, so keep inviting to stay near the top of your ladder.`,
+      `Current bonus: +${bonus.messagesPerDay} msgs/day, +${bonus.imageGenPerMonth} images/mo, +${bonus.maxAttachmentsPerChat} attachments/chat, +${Math.round(bonus.maxTokens / 1000)}K tokens`,
+    ];
+    if (nextTier) {
+      const need = nextTier.invites - creditedCount;
+      lines.push(`${need} more to your next reward at ${nextTier.invites} invites.`);
+    } else {
+      lines.push("You've hit the top of the referral ladder.");
+    }
+    await sendTelegramMessage(chatId, lines.join("\n"));
     res.status(200).send("OK");
     return;
   }

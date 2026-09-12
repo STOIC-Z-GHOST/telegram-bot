@@ -7,7 +7,8 @@
 import { requireTelegramUser } from "../../lib/telegramAuth.js";
 import { isOwner } from "../../lib/access.js";
 import { getUserTier } from "../../lib/subscriptions.js";
-import { getUsageSummary, TIER_LIMITS } from "../../lib/limits.js";
+import { getUsageSummary, TIER_LIMITS, limitsFor } from "../../lib/limits.js";
+import { getCreditedReferralCount, getNextMilestone } from "../../lib/referrals.js";
 
 export default async function handler(req, res) {
   const user = await requireTelegramUser(req, res);
@@ -24,18 +25,31 @@ export default async function handler(req, res) {
   }
 
   const tier = await getUserTier(user.id);
-  const limits = TIER_LIMITS[tier];
-  const { messagesLastHour, totalTokens, imagesLast30Days } = await getUsageSummary(user.id);
+  const limits = await limitsFor(user.id); // referral-bonus-aware for free tier
+  const { messagesLastHour, messagesLast24h, totalTokens, imagesLast30Days } = await getUsageSummary(user.id);
 
-  res.status(200).json({
+  const body = {
     isOwner: false,
     tier,
-    messagesLastHour,
-    messagesPerHourLimit: limits.messagesPerHour,
+    // Free tier is capped per day; Pro/Premium per rolling hour.
+    messageWindow: tier === "free" ? "day" : "hour",
+    messagesUsed: tier === "free" ? messagesLast24h : messagesLastHour,
+    messagesLimit: tier === "free" ? limits.messagesPerDay : limits.messagesPerHour,
     totalTokens,
     maxTokens: limits.maxTokens,
     imagesLast30Days,
     imageGenPerMonth: limits.imageGenPerMonth,
     maxImagesPerMessage: limits.maxImagesPerMessage,
-  });
+  };
+
+  if (tier === "free") {
+    const creditedReferrals = await getCreditedReferralCount(user.id);
+    const nextTier = getNextMilestone(creditedReferrals);
+    body.referrals = {
+      credited: creditedReferrals,
+      nextMilestoneAt: nextTier?.invites ?? null,
+    };
+  }
+
+  res.status(200).json(body);
 }
