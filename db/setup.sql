@@ -87,3 +87,13 @@ CREATE TABLE IF NOT EXISTS referrals (
   created_at TIMESTAMP NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS referrals_referrer_id_idx ON referrals(referrer_id);
+
+CREATE TABLE IF NOT EXISTS referral_trials (
+  telegram_user_id BIGINT PRIMARY KEY,
+  granted_at TIMESTAMP NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS channel_memberships (
+  telegram_user_id BIGINT PRIMARY KEY,
+  verified_at TIMESTAMP NOT NULL DEFAULT now()
+);

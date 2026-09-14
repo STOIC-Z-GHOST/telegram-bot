@@ -1,27 +1,34 @@
 // api/telegram-webhook.js
 //
-// Telegram webhook handler — Gemini for text + vision (Groq fallback for
-// text only), Pollinations.ai for image generation. Stateless: Vercel spins
-// this up per incoming message, so there's no "12 hour" session limit and
-// no process to keep running. Always on.
+// Telegram webhook handler — Groq first for plain text chat (fast), Gemini
+// for vision/documents and as Groq's text fallback, Pollinations.ai for
+// image generation. Stateless: Vercel spins this up per incoming message,
+// so there's no "12 hour" session limit and no process to keep running.
+// Always on.
 //
 // Required environment variables (set in Vercel → Project Settings →
 // Environment Variables):
 //   TELEGRAM_BOT_TOKEN       your bot token from BotFather
-//   OWNER_CHAT_ID            your own numeric chat id — the sole admin who
-//                             approves/denies access requests and can
-//                             remove people later. Replaces the old
-//                             AUTHORIZED_CHAT_IDS static allowlist —
-//                             everyone else's access is DB-backed now
-//                             (see lib/access.js), reachable through a
-//                             request -> approve/deny flow instead of a
-//                             fixed list you had to redeploy to change.
+//   OWNER_CHAT_ID            your own numeric chat id — the sole admin,
+//                             exempt from all tier limits, who can ban
+//                             (and unban) anyone else via /users and
+//                             /remove. Everyone else is auto-approved on
+//                             first contact and starts on Free tier
+//                             immediately (see lib/access.js) — this used
+//                             to be an invite-only bot with a manual
+//                             request -> approve/deny flow; that's gone
+//                             now that it's public, but the table/status
+//                             names ("approved"/"denied") are unchanged.
 //   DATABASE_URL              Neon Postgres — the access list lives here now,
 //                             shared with the mini app (see db/schema.js)
 //   GEMINI_API_KEY
 //   GROQ_API_KEY             from console.groq.com (free API tier, no card)
 //   TELEGRAM_WEBHOOK_SECRET  any random string you make up — verifies
 //                             incoming requests really came from Telegram
+//   TELEGRAM_BOT_USERNAME    optional — your bot's @username (no @). Lets
+//                             /invite build a real https://t.me/... link;
+//                             without it, /invite falls back to a plain
+//                             referral code the friend pastes in manually.
 //
 // Commands:
 //   /start           intro message
@@ -29,6 +36,13 @@
 //   /users           (owner only) lists approved users with a Remove button
 //   /upgrade         shows current plan + Pro/Premium options (Telegram Stars,
 //                     billed monthly, auto-renewing)
+//   /invite          shows your referral link/code, credited invites, and
+//                     current referral bonus
+//   /channelbonus    verifies channel membership for +3 image
+//                     generations/month, renewable every 30 days
+//   /think <q>       slower, more thorough answer (higher reasoning
+//                     effort on Groq, a real thinking budget on Gemini) —
+//                     capped per day by tier, not by how hard it thinks
 //   send a photo     analyzes it — uses your caption as the question if you
 //                     add one, otherwise reads/answers anything written in
 //                     the image or describes it
@@ -36,8 +50,7 @@
 //                     caption as the question if you add one, otherwise
 //                     summarizes / answers whatever's in the file
 //   anything else    normal text chat (Groq primary for speed, Gemini
-//                     fallback) — unless you're not yet approved, in which
-//                     case the access-request flow handles it instead
+//                     fallback)
 //
 // Extra npm dependencies:
 //   mammoth               pulls text out of .docx files
@@ -58,17 +71,26 @@ import {
   removeUser,
   listApprovedUsers,
 } from "../lib/access.js";
-import { checkMessageLimit, recordMessageUsage, checkImageGenLimit, recordImageUsage, TIER_LIMITS, limitsFor } from "../lib/limits.js";
+import { checkMessageLimit, recordMessageUsage, checkImageGenLimit, recordImageUsage, checkThinkingLimit, recordThinkingUsage, TIER_LIMITS, limitsFor } from "../lib/limits.js";
 import { getUserTier, activateSubscription, getTierPrices, setTierPrice, MAX_PRICE_STARS, SUBSCRIPTION_PERIOD_SECONDS } from "../lib/subscriptions.js";
 import {
   referralCodeFor,
+  inviteLinkFor,
   parseReferralPayload,
   recordPendingReferral,
   creditReferralIfPending,
+  maybeGrantReferralTrial,
   getCreditedReferralCount,
   getReferralBonus,
   getNextMilestone,
 } from "../lib/referrals.js";
+import {
+  channelUsername,
+  checkChannelMembership,
+  recordChannelVerification,
+  hasActiveChannelBonus,
+  CHANNEL_BONUS_IMAGES,
+} from "../lib/channel.js";
 
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
@@ -78,16 +100,28 @@ const WEBHOOK_SECRET = process.env.TELEGRAM_WEBHOOK_SECRET;
 // mini app is deployed. /start includes an "Open Chat App" button only
 // when this is set, so the bot still works fine without it.
 const MINI_APP_URL = process.env.MINI_APP_URL;
-// Used to build shareable https://t.me/<username>?start=ref_<id> invite
-// links for /invite. Without it, /invite falls back to a plain referral
-// code the friend can paste in manually.
-const BOT_USERNAME = process.env.TELEGRAM_BOT_USERNAME;
 
 // Model IDs current as of Aug 2026 — swap if your account has different access.
 const GEMINI_MODEL = "gemini-3.6-flash";
 const GROQ_MODEL = "openai/gpt-oss-120b"; // Groq's current flagship open model (text only)
 
 const PRODUCT_CREDIT = "🤖 @assist_ai — try it free.";
+
+// The growth loop: free-tier replies occasionally carry a small branded
+// footer that travels along for free if the person forwards the message
+// to a friend or group — unlike PRODUCT_CREDIT above (which only ever
+// shows once, in /start), this rides on the actual content people share.
+// Deliberately not on every reply (that would get old fast and feel
+// spammy) and never shown to Pro/Premium — a quiet, real perk for paying,
+// on top of the higher limits.
+const FOOTER_TEXT = "\n\n🤖 Generated by @assist_ai — try it free!";
+const FOOTER_CHANCE = 0.25; // roughly 1 in 4 free-tier replies
+
+function maybeAddFooter(text, tier) {
+  if (tier !== "free") return text;
+  if (Math.random() >= FOOTER_CHANCE) return text;
+  return text + FOOTER_TEXT;
+}
 
 // Free, no-cost way to noticeably improve answer quality without changing
 // models (the underlying model is already the strongest one available on
@@ -100,16 +134,23 @@ const SYSTEM_PROMPT =
   "(Telegram doesn't render them well) — use line breaks and dashes for " +
   "structure instead.";
 
-async function askGemini(prompt) {
+async function askGemini(prompt, { thinking = false } = {}) {
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`;
+  const body = {
+    system_instruction: { parts: [{ text: SYSTEM_PROMPT }] },
+    contents: [{ parts: [{ text: prompt }] }],
+  };
+  // Only set when /think asks for it — otherwise leave Gemini's own
+  // default thinking behavior alone rather than risk changing it for
+  // every normal reply.
+  if (thinking) {
+    body.generationConfig = { thinkingConfig: { thinkingBudget: 8192 } };
+  }
   const resp = await fetchWithTimeout(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      system_instruction: { parts: [{ text: SYSTEM_PROMPT }] },
-      contents: [{ parts: [{ text: prompt }] }],
-    }),
-  }, 20000);
+    body: JSON.stringify(body),
+  }, thinking ? 45000 : 20000); // a real reasoning pass takes longer than a normal reply
   if (!resp.ok) throw new Error(`Gemini error ${resp.status}: ${await resp.text()}`);
   const data = await resp.json();
   const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
@@ -180,21 +221,25 @@ async function askPollinationsImage(prompt) {
   return { buffer: Buffer.from(arrayBuffer), mimeType };
 }
 
-async function askGroq(prompt) {
+async function askGroq(prompt, { thinking = false } = {}) {
+  const body = {
+    model: GROQ_MODEL,
+    messages: [
+      { role: "system", content: SYSTEM_PROMPT },
+      { role: "user", content: prompt },
+    ],
+  };
+  // gpt-oss's reasoning_effort: low/medium/high — only bump it for /think,
+  // same reasoning as Gemini's thinkingConfig above.
+  if (thinking) body.reasoning_effort = "high";
   const resp = await fetchWithTimeout("https://api.groq.com/openai/v1/chat/completions", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       Authorization: `Bearer ${GROQ_API_KEY}`,
     },
-    body: JSON.stringify({
-      model: GROQ_MODEL,
-      messages: [
-        { role: "system", content: SYSTEM_PROMPT },
-        { role: "user", content: prompt },
-      ],
-    }),
-  }, 20000);
+    body: JSON.stringify(body),
+  }, thinking ? 40000 : 20000);
   if (!resp.ok) throw new Error(`Groq error ${resp.status}: ${await resp.text()}`);
   const data = await resp.json();
   const text = data?.choices?.[0]?.message?.content;
@@ -210,14 +255,17 @@ async function askGroq(prompt) {
 // strongest model on Gemini's free tier, so this trades a little of that
 // quality margin for consistently faster replies. Vision/documents are
 // untouched below — they stay Gemini-only either way.
+// Pass { thinking: true } for /think — same reasoning depth on every
+// tier, see lib/limits.js's checkThinkingLimit for what actually varies
+// by tier (how often you can call it, not how hard it thinks each time).
 // Returns { text, tokensUsed }.
-async function getAiReply(prompt) {
+async function getAiReply(prompt, opts = {}) {
   try {
-    return await askGroq(prompt);
+    return await askGroq(prompt, opts);
   } catch (err) {
     console.warn("Groq failed, falling back to Gemini:", err.message);
     try {
-      return await askGemini(prompt);
+      return await askGemini(prompt, opts);
     } catch (err2) {
       console.error("Gemini also failed:", err2.message);
       return { text: "⚠️ Both Groq and Gemini failed to respond just now — try again in a moment.", tokensUsed: null };
@@ -296,10 +344,12 @@ async function sendStartMessage(chatId) {
   const body = {
     chat_id: chatId,
     text:
-      "I'm online — Gemini for chat (Groq backup), /image <description> for pictures, " +
+      "I'm online — fast chat via Groq (Gemini backup), /image <description> for pictures, " +
       "send me a photo any time and I'll analyze it, and send me a PDF, .docx, or text " +
-      "file and I'll read it too. Send /upgrade any time to see your current plan and raise your limits, " +
-      "or /invite to earn more free usage by inviting friends." +
+      "file and I'll read it too. Try /think <question> for a slower, more thorough answer " +
+      "when you need it. Send /upgrade any time to see your current plan and raise your limits, " +
+      "/invite to earn more free usage by inviting friends, or /channelbonus for extra image " +
+      "generations by joining the channel." +
       (MINI_APP_URL ? " There's also a proper chat app now, with saved history." : "") +
       `\n\n${PRODUCT_CREDIT}`,
   };
@@ -646,14 +696,24 @@ export default async function handler(req, res) {
   // Credit any pending referral the moment this user does anything past
   // the initial /start click — safe to call unconditionally, it's a
   // no-op once already credited (or if this user was never referred).
-  await creditReferralIfPending(chatId);
+  const justCredited = await creditReferralIfPending(chatId);
+  if (justCredited) {
+    const trial = await maybeGrantReferralTrial(justCredited.referrerId);
+    if (trial) {
+      await sendTelegramMessage(
+        justCredited.referrerId,
+        "🎉 100 invites — that's genuinely impressive. As a thank-you, you've got 3 days of Pro " +
+          "(1M tokens, 100 msgs/hr, more images) starting now. Enjoy, and thanks for spreading the word!"
+      );
+    }
+  }
 
   if (text === "/invite") {
     const creditedCount = await getCreditedReferralCount(chatId);
     const bonus = getReferralBonus(creditedCount);
     const nextTier = getNextMilestone(creditedCount);
     const code = referralCodeFor(chatId);
-    const link = BOT_USERNAME ? `https://t.me/${BOT_USERNAME}?start=${code}` : null;
+    const link = inviteLinkFor(chatId);
 
     const lines = [
       link
@@ -670,6 +730,35 @@ export default async function handler(req, res) {
       lines.push("You've hit the top of the referral ladder.");
     }
     await sendTelegramMessage(chatId, lines.join("\n"));
+    res.status(200).send("OK");
+    return;
+  }
+
+  if (text === "/channelbonus") {
+    const username = channelUsername();
+    if (!username) {
+      await sendTelegramMessage(chatId, "The channel bonus isn't set up on this bot yet.");
+      res.status(200).send("OK");
+      return;
+    }
+    const alreadyActive = await hasActiveChannelBonus(chatId);
+    const { isMember } = await checkChannelMembership(chatId);
+    if (isMember) {
+      await recordChannelVerification(chatId);
+      await sendTelegramMessage(
+        chatId,
+        alreadyActive
+          ? `✅ Still verified — your +${CHANNEL_BONUS_IMAGES} images/month bonus is renewed for another 30 days.`
+          : `✅ Verified! You've got +${CHANNEL_BONUS_IMAGES} image generations/month for the next 30 days. ` +
+              `Run /channelbonus again before it expires to keep it going.`
+      );
+    } else {
+      await sendTelegramMessageWithKeyboard(
+        chatId,
+        `Join @${username}, then run /channelbonus again to unlock +${CHANNEL_BONUS_IMAGES} image generations/month.`,
+        [[{ text: "📢 Join the channel", url: `https://t.me/${username}` }]]
+      );
+    }
     res.status(200).send("OK");
     return;
   }
@@ -821,9 +910,10 @@ export default async function handler(req, res) {
           } else {
             const prompt = `${question}\n\n--- Document text ---\n${docText.slice(0, 30000)}`;
             const { text: answer, tokensUsed } = await getAiReply(prompt);
+            const tier = await getUserTier(chatId);
             // Neither of these needs the other's result — running them
             // concurrently instead of sequentially shaves a round trip.
-            await Promise.all([recordMessageUsage(chatId, tokensUsed), sendTelegramMessage(chatId, answer)]);
+            await Promise.all([recordMessageUsage(chatId, tokensUsed), sendTelegramMessage(chatId, maybeAddFooter(answer, tier))]);
           }
         }
       } else if (mimeType.startsWith("text/") || lowerName.endsWith(".txt")) {
@@ -835,7 +925,8 @@ export default async function handler(req, res) {
         } else {
           const prompt = `${question}\n\n--- Document text ---\n${docText.slice(0, 30000)}`;
           const { text: answer, tokensUsed } = await getAiReply(prompt);
-          await Promise.all([recordMessageUsage(chatId, tokensUsed), sendTelegramMessage(chatId, answer)]);
+          const tier = await getUserTier(chatId);
+          await Promise.all([recordMessageUsage(chatId, tokensUsed), sendTelegramMessage(chatId, maybeAddFooter(answer, tier))]);
         }
       } else {
         // Old .doc, .pptx, .xlsx, etc. — not wired up yet.
@@ -884,6 +975,43 @@ export default async function handler(req, res) {
     return;
   }
 
+  const thinkMatch = text.match(/^\/think\s+([\s\S]+)/i);
+  if (thinkMatch) {
+    const thinkingCheck = await checkThinkingLimit(chatId);
+    if (!thinkingCheck.allowed) {
+      await sendTelegramMessage(chatId, thinkingCheck.reason);
+      res.status(200).send("OK");
+      return;
+    }
+    // /think still counts as a message too — otherwise it'd be a free way
+    // around the regular messages-per-day/hour cap.
+    const limitCheck = await checkMessageLimit(chatId);
+    if (!limitCheck.allowed) {
+      await sendTelegramMessage(chatId, limitCheck.reason);
+      res.status(200).send("OK");
+      return;
+    }
+    sendTypingAction(chatId);
+    const { text: reply, tokensUsed } = await getAiReply(thinkMatch[1].trim(), { thinking: true });
+    const tier = await getUserTier(chatId);
+    await Promise.all([
+      recordMessageUsage(chatId, tokensUsed),
+      recordThinkingUsage(chatId),
+      sendTelegramMessage(chatId, maybeAddFooter(reply, tier)),
+    ]);
+    res.status(200).send("OK");
+    return;
+  }
+
+  if (/^\/think$/i.test(text)) {
+    await sendTelegramMessage(
+      chatId,
+      "Use /think followed by your question for a slower, more thorough answer — e.g. /think what's the best way to structure a small team's on-call rotation?"
+    );
+    res.status(200).send("OK");
+    return;
+  }
+
   const limitCheck = await checkMessageLimit(chatId);
   if (!limitCheck.allowed) {
     await sendTelegramMessage(chatId, limitCheck.reason);
@@ -893,6 +1021,7 @@ export default async function handler(req, res) {
 
   sendTypingAction(chatId); // fire-and-forget — already swallows its own errors
   const { text: reply, tokensUsed } = await getAiReply(text);
-  await Promise.all([recordMessageUsage(chatId, tokensUsed), sendTelegramMessage(chatId, reply)]);
+  const tier = await getUserTier(chatId);
+  await Promise.all([recordMessageUsage(chatId, tokensUsed), sendTelegramMessage(chatId, maybeAddFooter(reply, tier))]);
   res.status(200).send("OK");
 }

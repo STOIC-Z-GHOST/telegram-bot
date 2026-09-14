@@ -8,7 +8,7 @@ import { requireTelegramUser } from "../../lib/telegramAuth.js";
 import { isOwner } from "../../lib/access.js";
 import { getUserTier } from "../../lib/subscriptions.js";
 import { getUsageSummary, TIER_LIMITS, limitsFor } from "../../lib/limits.js";
-import { getCreditedReferralCount, getNextMilestone } from "../../lib/referrals.js";
+import { getCreditedReferralCount, getNextMilestone, referralCodeFor, inviteLinkFor } from "../../lib/referrals.js";
 
 export default async function handler(req, res) {
   const user = await requireTelegramUser(req, res);
@@ -48,6 +48,10 @@ export default async function handler(req, res) {
     body.referrals = {
       credited: creditedReferrals,
       nextMilestoneAt: nextTier?.invites ?? null,
+      code: referralCodeFor(user.id),
+      // null if TELEGRAM_BOT_USERNAME isn't set server-side — the
+      // frontend falls back to showing the plain code in that case.
+      link: inviteLinkFor(user.id),
     };
   }
 

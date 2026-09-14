@@ -20,4 +20,6 @@ migrate_memories.sql
 migrate_subscriptions_v6.sql
 migrate_plan_prices_v7.sql
 migrate_multi_attachments_v8.sql
-migrate_multi_referals_v9.sql
+migrate_channel_bonus_v11.sql
+migrate_referral_trials_v10.sql
+migrate_referrals_v9.sql

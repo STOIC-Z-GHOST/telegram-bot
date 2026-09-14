@@ -130,6 +130,27 @@ export const referrals = pgTable(
   })
 );
 
+// One row per user who's ever received the 100-invite Pro trial — a
+// separate, lifetime-only flag rather than reusing the rolling referral
+// count, specifically so someone can't re-earn the trial every time their
+// rolling count dips below 100 and climbs back over it. See
+// maybeGrantReferralTrial in lib/referrals.js.
+export const referralTrials = pgTable("referral_trials", {
+  telegramUserId: bigint("telegram_user_id", { mode: "number" }).primaryKey(),
+  grantedAt: timestamp("granted_at").notNull().defaultNow(),
+});
+
+// One row per user who has ever verified channel membership. verifiedAt
+// is re-stamped each time they successfully re-run /channelbonus — the
+// image-gen bonus in lib/channel.js only counts as active within a recent
+// window of that timestamp, so it quietly lapses if someone leaves the
+// channel and never re-verifies, without the bot needing to poll Telegram
+// on every single message.
+export const channelMemberships = pgTable("channel_memberships", {
+  telegramUserId: bigint("telegram_user_id", { mode: "number" }).primaryKey(),
+  verifiedAt: timestamp("verified_at").notNull().defaultNow(),
+});
+
 // One row per Telegram user who has ever subscribed. A missing row (or a
 // row whose expiresAt has passed) means "free tier" — there's no explicit
 // cancellation flow to handle: Telegram's own subscription UI lets a user

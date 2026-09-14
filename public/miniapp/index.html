@@ -604,6 +604,24 @@
     padding: 8px 0;
   }
   .price-edit-row span { flex-shrink: 0; width: 60px; font-size: 14px; }
+  .invite-link-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 8px 0;
+  }
+  .invite-link-row input {
+    flex: 1;
+    min-width: 0;
+    border: 1px solid var(--section-separator);
+    border-radius: 8px;
+    padding: 8px 10px;
+    font-size: 13px;
+    font-family: inherit;
+    background: var(--secondary-bg);
+    color: var(--text);
+  }
+  .invite-link-row .icon-btn { flex-shrink: 0; }
   .price-edit-row input {
     flex: 1;
     min-width: 0;
@@ -633,7 +651,7 @@
   <div class="splash-logo"><img src="/logo.jpg" alt="" /></div>
   <div class="splash-name" id="splash-name"></div>
   <div class="splash-spacer"></div>
-  <div class="splash-credit">Made by NF</div>
+  <div class="splash-credit">🤖 @assist_ai</div>
 </div>
 <div id="app">
   <div id="view-list" class="view">
@@ -702,6 +720,15 @@
         <div id="memory-list"></div>
         <button type="button" class="menu-item" id="add-memory-btn" style="padding: 10px 0 2px;">+ Add memory</button>
       </div>
+      <div class="settings-section" id="invite-section" hidden>
+        <div class="settings-label">Invite friends</div>
+        <div class="settings-hint" id="invite-progress" style="margin-top: 0;"></div>
+        <div class="invite-link-row">
+          <input type="text" id="invite-link-input" readonly />
+          <button type="button" id="invite-copy-btn" class="icon-btn" aria-label="Copy invite link">📋</button>
+        </div>
+        <button type="button" class="menu-item" id="invite-share-btn" style="padding: 9px 0;" hidden>📨 Share with a friend</button>
+      </div>
       <div class="settings-section" id="upgrade-section" hidden>
         <div class="settings-label" style="margin-bottom: 6px;">Plan</div>
         <div class="settings-hint" id="current-tier-label" style="margin-top: 0; margin-bottom: 10px;"></div>
@@ -740,7 +767,7 @@
   <div class="menu-header">
     <div class="menu-avatar"><img src="/logo.jpg" alt="" /></div>
     <div class="menu-bot-name" id="menu-bot-name"></div>
-    <div class="menu-designer">Designed by Nahom (NF)</div>
+    <div class="menu-designer">Powered by @assist_ai</div>
   </div>
   <div class="menu-usage" id="menu-usage" hidden>
     <div class="menu-usage-row" id="menu-usage-messages"></div>
@@ -752,7 +779,7 @@
     </button>
   </nav>
   <div class="menu-footer">
-    <div class="credit-box">Created by NF · © 2026</div>
+    <div class="credit-box">@assist_ai · © 2026</div>
   </div>
 </aside>
 
@@ -766,7 +793,7 @@
   // Edit this to your bot's real display name — it drives the splash
   // screen, the menu header, and the page title. The logo itself is
   // public/logo.jpg, referenced directly in the HTML below.
-  const BOT_NAME = "NF Assistant";
+  const BOT_NAME = "assist_ai";
 
   const tg = window.Telegram?.WebApp;
   tg?.ready();
@@ -817,6 +844,11 @@
   const currentTierLabelEl = document.getElementById("current-tier-label");
   const upgradeProBtn = document.getElementById("upgrade-pro-btn");
   const upgradePremiumBtn = document.getElementById("upgrade-premium-btn");
+  const inviteSectionEl = document.getElementById("invite-section");
+  const inviteProgressEl = document.getElementById("invite-progress");
+  const inviteLinkInputEl = document.getElementById("invite-link-input");
+  const inviteCopyBtn = document.getElementById("invite-copy-btn");
+  const inviteShareBtn = document.getElementById("invite-share-btn");
   const planDetailsBtn = document.getElementById("plan-details-btn");
   const planDetailsTableEl = document.getElementById("plan-details-table");
   const usersSectionEl = document.getElementById("users-section");
@@ -870,6 +902,8 @@
     return new Date(iso).toLocaleDateString();
   }
 
+  let settingsOpenedFromChat = false;
+
   function showListView() {
     appEl.classList.remove("chat-active", "settings-active");
     activeChatId = null;
@@ -878,16 +912,41 @@
   }
 
   function showChatView() {
+    // Mutually exclusive with Settings — the two used to be able to both
+    // be "active" at once (each only ever added its own class, neither
+    // cleared the other), which is what let the composer show through
+    // underneath the Settings panel.
+    appEl.classList.remove("settings-active");
     appEl.classList.add("chat-active");
     tg?.BackButton?.show();
   }
 
   function showSettingsView() {
+    settingsOpenedFromChat = appEl.classList.contains("chat-active");
+    appEl.classList.remove("chat-active");
     appEl.classList.add("settings-active");
     tg?.BackButton?.show();
   }
 
-  tg?.BackButton?.onClick(() => showListView());
+  // Closing Settings now returns you to the chat you had open (if any)
+  // instead of always dropping you back to the list.
+  function closeSettingsView() {
+    appEl.classList.remove("settings-active");
+    if (settingsOpenedFromChat && activeChatId) {
+      appEl.classList.add("chat-active");
+      tg?.BackButton?.show();
+    } else {
+      showListView();
+    }
+  }
+
+  tg?.BackButton?.onClick(() => {
+    if (appEl.classList.contains("settings-active")) {
+      closeSettingsView();
+    } else {
+      showListView();
+    }
+  });
 
   // --- Theme (System / Light / Dark) ---
   const THEME_KEY = "miniapp-theme";
@@ -937,7 +996,7 @@
     loadUsers();
     loadUsage();
   });
-  settingsBackBtn.addEventListener("click", showListView);
+  settingsBackBtn.addEventListener("click", closeSettingsView);
 
   // --- Memory toggle (server-side — it affects how new chats are
   // answered, so it has to live on the backend, not just this device) ---
@@ -1090,6 +1149,7 @@
       if (data.isOwner) {
         menuUsageEl.hidden = true;
         upgradeSectionEl.hidden = true;
+        inviteSectionEl.hidden = true;
         return;
       }
       menuUsageEl.hidden = false;
@@ -1104,6 +1164,18 @@
       upgradeProBtn.hidden = data.tier !== "free";
       upgradePremiumBtn.hidden = data.tier === "premium";
 
+      if (data.referrals) {
+        inviteSectionEl.hidden = false;
+        inviteLinkInputEl.value = data.referrals.link || `/start ${data.referrals.code}`;
+        inviteShareBtn.hidden = !data.referrals.link; // needs a real link to hand to Telegram's share sheet
+        const next = data.referrals.nextMilestoneAt;
+        inviteProgressEl.textContent = next
+          ? `${data.referrals.credited} credited invites (last 60 days) — ${next - data.referrals.credited} more to your next reward.`
+          : `${data.referrals.credited} credited invites (last 60 days) — you've hit the top of the ladder.`;
+      } else {
+        inviteSectionEl.hidden = true;
+      }
+
       try {
         const plans = await apiFetch("/api/miniapp/plans");
         upgradeProBtn.textContent = `⭐ Upgrade to Pro — ${plans.prices.pro} Stars/month`;
@@ -1115,8 +1187,27 @@
       // Fails closed — no usage or upgrade options shown rather than a broken row.
       menuUsageEl.hidden = true;
       upgradeSectionEl.hidden = true;
+      inviteSectionEl.hidden = true;
     }
   }
+
+  inviteCopyBtn.addEventListener("click", async () => {
+    await copyTextToClipboard(inviteLinkInputEl.value);
+    tg?.HapticFeedback?.notificationOccurred?.("success");
+    const original = inviteCopyBtn.textContent;
+    inviteCopyBtn.textContent = "✅";
+    setTimeout(() => { inviteCopyBtn.textContent = original; }, 1200);
+  });
+
+  inviteShareBtn.addEventListener("click", () => {
+    const link = inviteLinkInputEl.value;
+    const shareText = "Come chat with me on @assist_ai — it's free 🤖";
+    const shareUrl = `https://t.me/share/url?url=${encodeURIComponent(link)}&text=${encodeURIComponent(shareText)}`;
+    // Opens Telegram's own native share sheet so the person picks a real
+    // contact or group — much more reliable inside Telegram's WebView
+    // than trying to trigger the browser's navigator.share().
+    tg?.openTelegramLink ? tg.openTelegramLink(shareUrl) : window.open(shareUrl, "_blank");
+  });
 
   planDetailsBtn.addEventListener("click", async () => {
     if (!planDetailsTableEl.hidden) {
@@ -1374,6 +1465,33 @@
   // selection/long-press-to-copy no matter what CSS is set (see the
   // .bubble comment above) — this sidesteps that entirely with a
   // guaranteed-to-work copy button instead.
+  // Shared by the message-bubble copy button and the invite-link copy
+  // button in Settings. Falls back to the old execCommand trick for
+  // WebViews that don't expose the Clipboard API.
+  async function copyTextToClipboard(text) {
+    if (navigator.clipboard?.writeText) {
+      try {
+        await navigator.clipboard.writeText(text);
+        return;
+      } catch {
+        /* fall through to the execCommand fallback below */
+      }
+    }
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.style.position = "fixed";
+    ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    try {
+      document.execCommand("copy");
+    } catch {
+      /* nothing more we can do */
+    }
+    document.body.removeChild(ta);
+  }
+
   function renderCopyButton(text) {
     const btn = document.createElement("button");
     btn.type = "button";
@@ -1385,28 +1503,7 @@
       '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>';
     btn.innerHTML = copyIcon;
     btn.addEventListener("click", async () => {
-      try {
-        if (navigator.clipboard?.writeText) {
-          await navigator.clipboard.writeText(text);
-        } else {
-          throw new Error("clipboard API unavailable");
-        }
-      } catch {
-        // Fallback for WebViews that don't expose the Clipboard API.
-        const ta = document.createElement("textarea");
-        ta.value = text;
-        ta.style.position = "fixed";
-        ta.style.opacity = "0";
-        document.body.appendChild(ta);
-        ta.focus();
-        ta.select();
-        try {
-          document.execCommand("copy");
-        } catch {
-          /* nothing more we can do */
-        }
-        document.body.removeChild(ta);
-      }
+      await copyTextToClipboard(text);
       tg?.HapticFeedback?.notificationOccurred?.("success");
       btn.innerHTML = checkIcon;
       btn.disabled = true;
