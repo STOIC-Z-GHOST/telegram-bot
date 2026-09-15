@@ -139,7 +139,10 @@ const SYSTEM_PROMPT =
   "Give complete, specific answers with real detail — don't artificially " +
   "shorten a good answer just to be brief. Plain text only, no markdown headers " +
   "(Telegram doesn't render them well) — use line breaks and dashes for " +
-  "structure instead.";
+  "structure instead. If asked who you are, what model you are, or who made you: " +
+  "you're this bot's own AI assistant, running on Groq and Google Gemini — never " +
+  "claim to be ChatGPT, GPT-4, or any other OpenAI product, and don't cite a " +
+  "training cutoff date as if you were one of those products.";
 
 async function askGemini(prompt, { thinking = false } = {}) {
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`;

@@ -20,7 +20,21 @@ export default async function handler(req, res) {
   }
 
   if (isOwner(user.id)) {
-    res.status(200).json({ isOwner: true, maxImagesPerMessage: TIER_LIMITS.premium.maxImagesPerMessage });
+    const creditedReferrals = await getCreditedReferralCount(user.id);
+    const nextTier = getNextMilestone(creditedReferrals);
+    res.status(200).json({
+      isOwner: true,
+      maxImagesPerMessage: TIER_LIMITS.premium.maxImagesPerMessage,
+      // Shown so the owner can test/demo the referral flow too — it just
+      // never affects the owner's own limits, since those are already
+      // unrestricted regardless of what this counts.
+      referrals: {
+        credited: creditedReferrals,
+        nextMilestoneAt: nextTier?.invites ?? null,
+        code: referralCodeFor(user.id),
+        link: inviteLinkFor(user.id),
+      },
+    });
     return;
   }
 

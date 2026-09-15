@@ -1150,14 +1150,31 @@
   });
 
   // --- Usage strip (drawer menu) + Upgrade section (Settings) ---
+  function renderInviteSection(referrals) {
+    if (!referrals) {
+      inviteSectionEl.hidden = true;
+      return;
+    }
+    inviteSectionEl.hidden = false;
+    inviteLinkInputEl.value = referrals.link || `/start ${referrals.code}`;
+    inviteShareBtn.hidden = !referrals.link; // needs a real link to hand to Telegram's share sheet
+    const next = referrals.nextMilestoneAt;
+    inviteProgressEl.textContent = next
+      ? `${referrals.credited} credited invites (last 60 days) — ${next - referrals.credited} more to your next reward.`
+      : `${referrals.credited} credited invites (last 60 days) — you've hit the top of the ladder.`;
+  }
+
   async function loadUsage() {
     try {
       const data = await apiFetch("/api/miniapp/usage");
       if (data.maxImagesPerMessage) maxImagesPerMessage = data.maxImagesPerMessage;
       if (data.isOwner) {
+        // No usage limits or upgrade options for the owner — those don't
+        // apply — but the invite section still shows, purely so the
+        // owner can generate/test their own referral link.
         menuUsageEl.hidden = true;
         upgradeSectionEl.hidden = true;
-        inviteSectionEl.hidden = true;
+        renderInviteSection(data.referrals);
         return;
       }
       menuUsageEl.hidden = false;
@@ -1172,17 +1189,7 @@
       upgradeProBtn.hidden = data.tier !== "free";
       upgradePremiumBtn.hidden = data.tier === "premium";
 
-      if (data.referrals) {
-        inviteSectionEl.hidden = false;
-        inviteLinkInputEl.value = data.referrals.link || `/start ${data.referrals.code}`;
-        inviteShareBtn.hidden = !data.referrals.link; // needs a real link to hand to Telegram's share sheet
-        const next = data.referrals.nextMilestoneAt;
-        inviteProgressEl.textContent = next
-          ? `${data.referrals.credited} credited invites (last 60 days) — ${next - data.referrals.credited} more to your next reward.`
-          : `${data.referrals.credited} credited invites (last 60 days) — you've hit the top of the ladder.`;
-      } else {
-        inviteSectionEl.hidden = true;
-      }
+      renderInviteSection(data.referrals);
 
       try {
         const plans = await apiFetch("/api/miniapp/plans");
