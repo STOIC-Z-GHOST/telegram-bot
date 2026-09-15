@@ -99,7 +99,14 @@ const WEBHOOK_SECRET = process.env.TELEGRAM_WEBHOOK_SECRET;
 // e.g. https://your-project.vercel.app/miniapp/index.html — set after the
 // mini app is deployed. /start includes an "Open Chat App" button only
 // when this is set, so the bot still works fine without it.
-const MINI_APP_URL = process.env.MINI_APP_URL;
+// Telegram's WebView caches Mini App pages aggressively — a query param
+// that changes on every deploy forces it to actually fetch the new HTML
+// instead of serving a stale cached copy. VERCEL_GIT_COMMIT_SHA is set
+// automatically by Vercel on every deploy, so this needs no manual
+// bumping; Date.now() is just a local-dev fallback.
+const MINI_APP_URL = process.env.MINI_APP_URL
+  ? `${process.env.MINI_APP_URL}?v=${process.env.VERCEL_GIT_COMMIT_SHA || Date.now()}`
+  : null;
 
 // Model IDs current as of Aug 2026 — swap if your account has different access.
 const GEMINI_MODEL = "gemini-3.6-flash";

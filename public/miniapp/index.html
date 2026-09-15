@@ -908,6 +908,14 @@
     appEl.classList.remove("chat-active", "settings-active");
     activeChatId = null;
     isDraftChat = false;
+    // Telegram's own native back button (top of its chrome, not this
+    // page's own back-btn) doesn't count as a click inside our document,
+    // so it never blurs the composer on its own — the keyboard was
+    // staying up over the list view because the textarea technically
+    // still had focus even though it's no longer visible. Our own
+    // back-btn "accidentally" fixed this by being a DOM click, which
+    // naturally blurs whatever was focused.
+    inputEl.blur();
     tg?.BackButton?.hide();
   }
 
