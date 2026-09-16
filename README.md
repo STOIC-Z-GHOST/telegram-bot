@@ -245,7 +245,11 @@ real, referral-adjusted numbers; `TIER_LIMITS` is just the base table.
 when this command is used. Every tier gets the exact same reasoning depth
 per call; what changes by tier is `thinkingPerDay`, how many times you can
 call it before the daily cap kicks in — a free user hits that wall fastest,
-Premium slowest.
+Premium slowest. The mini app has the same feature as a 🧠 toggle button
+next to the attach button — tap it once, it applies to your next message
+only, then turns itself back off — going through the same `checkThinkingLimit`/
+`recordThinkingUsage` calls in `lib/limits.js`, so the daily cap is shared
+across the DM and the mini app rather than being two separate quotas.
 
 Worth knowing on "images per message": Gemini's own technical ceiling is
 much higher than any of these numbers (thousands of images, bounded mainly

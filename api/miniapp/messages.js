@@ -42,6 +42,8 @@ import {
   recordImageUsage,
   checkImageCountLimit,
   checkChatAttachmentLimit,
+  checkThinkingLimit,
+  recordThinkingUsage,
 } from "../../lib/limits.js";
 
 async function loadOwnedChat(chatId, telegramUserId) {
@@ -125,10 +127,11 @@ export default async function handler(req, res) {
   }
 
   if (req.method === "POST") {
-    const { chatId, content, attachments: rawAttachments } = req.body || {};
+    const { chatId, content, attachments: rawAttachments, thinking } = req.body || {};
     const attachments = Array.isArray(rawAttachments) ? rawAttachments : [];
     const hasAttachment = attachments.length > 0;
     const trimmedContent = (content || "").trim();
+    const wantsThinking = !!thinking && !hasAttachment; // thinking mode is text-only, same as the DM bot's /think
 
     if (!chatId || (!trimmedContent && !hasAttachment)) {
       res.status(400).json({ error: "chatId and content (or at least one attachment) are required" });
@@ -148,6 +151,14 @@ export default async function handler(req, res) {
     if (!limitCheck.allowed) {
       res.status(429).json({ error: "rate_limited", message: limitCheck.reason });
       return;
+    }
+
+    if (wantsThinking) {
+      const thinkingCheck = await checkThinkingLimit(user.id);
+      if (!thinkingCheck.allowed) {
+        res.status(429).json({ error: "rate_limited", message: thinkingCheck.reason });
+        return;
+      }
     }
 
     // Tier-aware: how many images in this one message, and this chat's
@@ -217,12 +228,14 @@ export default async function handler(req, res) {
 
       const result = await getConversationReply(
         history.map((m) => ({ role: m.role, content: m.content })),
-        { savedMemories, allowMemorySave: memoryOn }
+        { savedMemories, allowMemorySave: memoryOn },
+        { thinking: wantsThinking }
       );
       rawReply = result.text;
       tokensUsed = result.tokensUsed;
     }
     await recordMessageUsage(user.id, tokensUsed);
+    if (wantsThinking) await recordThinkingUsage(user.id);
 
     // Natural-language image request, detected by the model itself rather
     // than a literal /image command — e.g. "generate an image of a cat

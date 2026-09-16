@@ -370,6 +370,17 @@
     padding: 6px 4px;
     flex-shrink: 0;
   }
+  #think-toggle-btn {
+    font-size: 18px;
+    padding: 6px 4px;
+    flex-shrink: 0;
+    border-radius: 8px;
+    opacity: 0.55;
+  }
+  #think-toggle-btn.active {
+    opacity: 1;
+    background: var(--button);
+  }
   .attachment-chips {
     display: flex;
     flex-wrap: wrap;
@@ -680,6 +691,7 @@
     <div id="attachment-chips" class="attachment-chips" hidden></div>
     <form id="composer" class="composer">
       <button type="button" id="attach-btn" class="icon-btn" aria-label="Attach file">📎</button>
+      <button type="button" id="think-toggle-btn" class="icon-btn" aria-label="Think mode">🧠</button>
       <input type="file" id="file-input" accept="image/*,application/pdf,.docx,.txt" multiple hidden />
       <textarea id="input" placeholder="Message" rows="1"></textarea>
       <button id="send-btn" class="send-btn" type="submit" aria-label="Send">➤</button>
@@ -822,6 +834,8 @@
   const inputEl = document.getElementById("input");
   const sendBtn = document.getElementById("send-btn");
   const attachBtn = document.getElementById("attach-btn");
+  const thinkToggleBtn = document.getElementById("think-toggle-btn");
+  let thinkingEnabled = false;
   const fileInputEl = document.getElementById("file-input");
   const attachmentChipsEl = document.getElementById("attachment-chips");
   const newChatBtn = document.getElementById("new-chat-fab");
@@ -1581,6 +1595,12 @@
 
   attachBtn.addEventListener("click", () => fileInputEl.click());
 
+  thinkToggleBtn.addEventListener("click", () => {
+    thinkingEnabled = !thinkingEnabled;
+    thinkToggleBtn.classList.toggle("active", thinkingEnabled);
+    tg?.HapticFeedback?.impactOccurred?.("light");
+  });
+
   function renderAttachmentChips() {
     attachmentChipsEl.innerHTML = "";
     attachmentChipsEl.hidden = pendingFiles.length === 0;
@@ -1643,6 +1663,9 @@
     const text = inputEl.value.trim();
     const files = pendingFiles;
     if ((!text && files.length === 0) || (!activeChatId && !isDraftChat)) return;
+    const useThinking = thinkingEnabled;
+    thinkingEnabled = false;
+    thinkToggleBtn.classList.remove("active"); // one-shot per message, same as the DM bot's /think
 
     if (isDraftChat) {
       // First message in a fresh chat — create the real row now, not back
@@ -1702,7 +1725,7 @@
 
       const reply = await apiFetch("/api/miniapp/messages", {
         method: "POST",
-        body: JSON.stringify({ chatId: activeChatId, content: text, attachments: uploadedAttachments }),
+        body: JSON.stringify({ chatId: activeChatId, content: text, attachments: uploadedAttachments, thinking: useThinking }),
       });
       typingEl.remove();
       renderBubble("assistant", reply.content, reply.attachments || null);
