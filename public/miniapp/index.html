@@ -680,7 +680,7 @@
   <div class="splash-logo"><img src="/logo.jpg" alt="" /></div>
   <div class="splash-name" id="splash-name"></div>
   <div class="splash-spacer"></div>
-  <div class="splash-credit">🤖 @assist_ai</div>
+  <div class="splash-credit">🤖 @@Chat_assistai_bot</div>
 </div>
 <div id="app">
   <div id="view-list" class="view">
@@ -797,7 +797,7 @@
   <div class="menu-header">
     <div class="menu-avatar"><img src="/logo.jpg" alt="" /></div>
     <div class="menu-bot-name" id="menu-bot-name"></div>
-    <div class="menu-designer">Powered by @assist_ai</div>
+    <div class="menu-designer">Powered by @@Chat_assistai_bot</div>
   </div>
   <div class="menu-usage" id="menu-usage" hidden>
     <div class="menu-usage-row" id="menu-usage-messages"></div>
@@ -809,7 +809,7 @@
     </button>
   </nav>
   <div class="menu-footer">
-    <div class="credit-box">@assist_ai · © 2026</div>
+    <div class="credit-box">@@Chat_assistai_bot · © 2026</div>
   </div>
 </aside>
 
@@ -823,7 +823,7 @@
   // Edit this to your bot's real display name — it drives the splash
   // screen, the menu header, and the page title. The logo itself is
   // public/logo.jpg, referenced directly in the HTML below.
-  const BOT_NAME = "assist_ai";
+  const BOT_NAME = "@Chat_assistai_bot";
 
   const tg = window.Telegram?.WebApp;
   tg?.ready();
@@ -1248,7 +1248,7 @@
 
   inviteShareBtn.addEventListener("click", () => {
     const link = inviteLinkInputEl.value;
-    const shareText = "Come chat with me on @assist_ai — it's free 🤖";
+    const shareText = "Come chat with me on @@Chat_assistai_bot — it's free 🤖";
     const shareUrl = `https://t.me/share/url?url=${encodeURIComponent(link)}&text=${encodeURIComponent(shareText)}`;
     // Opens Telegram's own native share sheet so the person picks a real
     // contact or group — much more reliable inside Telegram's WebView
