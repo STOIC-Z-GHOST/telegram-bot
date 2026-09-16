@@ -246,6 +246,25 @@
     visibility: hidden !important;
   }
 
+  /* Telegram WebView can keep a transformed absolute view's old geometry
+     during viewport changes. Use a single mounted view instead of sliding
+     three full-screen views over one another; this prevents the composer
+     from ending up in the middle of a split screen. */
+  .view {
+    display: none;
+    transform: none !important;
+    transition: none !important;
+    visibility: hidden;
+  }
+  #app:not(.chat-active):not(.settings-active) #view-list,
+  #app.chat-active #view-chat,
+  #app.settings-active #view-settings {
+    display: flex;
+    visibility: visible;
+    pointer-events: auto;
+    z-index: 1;
+  }
+
   .topbar {
     display: flex;
     align-items: center;
