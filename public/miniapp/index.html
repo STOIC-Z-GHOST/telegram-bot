@@ -211,14 +211,32 @@
     flex-direction: column;
     background: var(--bg);
     transition: transform 0.28s cubic-bezier(0.32, 0.72, 0, 1);
+    /* A view that's only "peeking" (or fully off-screen) must never be
+       clickable — this was the actual bug: the 30%-visible list view
+       (or whatever was behind it) stayed fully interactive the whole
+       time. On a narrow phone that peek is a thin sliver, easy to miss
+       as the cause; on a wide desktop window it's a huge, obviously
+       clickable strip, which is what the screen recording caught. Only
+       the view actually at rest (translateX(0)) gets clicks back below.
+     */
+    pointer-events: none;
+  }
+  #app:not(.chat-active):not(.settings-active) #view-list,
+  #app.chat-active #view-chat,
+  #app.settings-active #view-settings {
+    pointer-events: auto;
   }
   @media (prefers-reduced-motion: reduce) {
     .view { transition: none; }
   }
   #view-chat, #view-settings { transform: translateX(100%); }
-  #app.chat-active #view-list { transform: translateX(-30%); }
+  /* A fixed pixel offset, not a percentage — a percentage-based peek
+     scales up with the window, so on a wide desktop window "30% of the
+     width" becomes a huge, prominent strip instead of a small hint.
+     40px reads as a sliver on any screen size. */
+  #app.chat-active #view-list { transform: translateX(-40px); }
   #app.chat-active #view-chat { transform: translateX(0); }
-  #app.settings-active #view-list { transform: translateX(-30%); }
+  #app.settings-active #view-list { transform: translateX(-40px); }
   #app.settings-active #view-settings { transform: translateX(0); }
 
   .topbar {
