@@ -211,6 +211,7 @@
     flex-direction: column;
     background: var(--bg);
     transition: transform 0.28s cubic-bezier(0.32, 0.72, 0, 1);
+    visibility: hidden;
     /* A view that's only "peeking" (or fully off-screen) must never be
        clickable — this was the actual bug: the 30%-visible list view
        (or whatever was behind it) stayed fully interactive the whole
@@ -225,6 +226,7 @@
   #app.chat-active #view-chat,
   #app.settings-active #view-settings {
     pointer-events: auto;
+    visibility: visible;
   }
   @media (prefers-reduced-motion: reduce) {
     .view { transition: none; }
@@ -238,6 +240,11 @@
   #app.chat-active #view-chat { transform: translateX(0); }
   #app.settings-active #view-list { transform: translateX(-40px); }
   #app.settings-active #view-settings { transform: translateX(0); }
+  #app.chat-active #view-settings,
+  #app.settings-active #view-chat {
+    pointer-events: none !important;
+    visibility: hidden !important;
+  }
 
   .topbar {
     display: flex;
@@ -680,7 +687,7 @@
   <div class="splash-logo"><img src="/logo.jpg" alt="" /></div>
   <div class="splash-name" id="splash-name"></div>
   <div class="splash-spacer"></div>
-  <div class="splash-credit">🤖 @@Chat_assistai_bot</div>
+  <div class="splash-credit">🤖 @assist_ai</div>
 </div>
 <div id="app">
   <div id="view-list" class="view">
@@ -797,7 +804,7 @@
   <div class="menu-header">
     <div class="menu-avatar"><img src="/logo.jpg" alt="" /></div>
     <div class="menu-bot-name" id="menu-bot-name"></div>
-    <div class="menu-designer">Powered by @@Chat_assistai_bot</div>
+    <div class="menu-designer">Powered by @assist_ai</div>
   </div>
   <div class="menu-usage" id="menu-usage" hidden>
     <div class="menu-usage-row" id="menu-usage-messages"></div>
@@ -809,7 +816,7 @@
     </button>
   </nav>
   <div class="menu-footer">
-    <div class="credit-box">@@Chat_assistai_bot · © 2026</div>
+    <div class="credit-box">@assist_ai · © 2026</div>
   </div>
 </aside>
 
@@ -823,7 +830,7 @@
   // Edit this to your bot's real display name — it drives the splash
   // screen, the menu header, and the page title. The logo itself is
   // public/logo.jpg, referenced directly in the HTML below.
-  const BOT_NAME = "@Chat_assistai_bot";
+  const BOT_NAME = "assist_ai";
 
   const tg = window.Telegram?.WebApp;
   tg?.ready();
@@ -937,7 +944,7 @@
   let settingsOpenedFromChat = false;
 
   function showListView() {
-    appEl.classList.remove("chat-active", "settings-active");
+    appEl.className = "";
     activeChatId = null;
     isDraftChat = false;
     // Telegram's own native back button (top of its chrome, not this
@@ -956,15 +963,13 @@
     // be "active" at once (each only ever added its own class, neither
     // cleared the other), which is what let the composer show through
     // underneath the Settings panel.
-    appEl.classList.remove("settings-active");
-    appEl.classList.add("chat-active");
+    appEl.className = "chat-active";
     tg?.BackButton?.show();
   }
 
   function showSettingsView() {
     settingsOpenedFromChat = appEl.classList.contains("chat-active");
-    appEl.classList.remove("chat-active");
-    appEl.classList.add("settings-active");
+    appEl.className = "settings-active";
     tg?.BackButton?.show();
   }
 
@@ -1248,7 +1253,7 @@
 
   inviteShareBtn.addEventListener("click", () => {
     const link = inviteLinkInputEl.value;
-    const shareText = "Come chat with me on @@Chat_assistai_bot — it's free 🤖";
+    const shareText = "Come chat with me on @assist_ai — it's free 🤖";
     const shareUrl = `https://t.me/share/url?url=${encodeURIComponent(link)}&text=${encodeURIComponent(shareText)}`;
     // Opens Telegram's own native share sheet so the person picks a real
     // contact or group — much more reliable inside Telegram's WebView
@@ -1596,6 +1601,9 @@
   }
 
   newChatBtn.addEventListener("click", () => {
+    // Temporary diagnostic: remove this alert after confirming that the
+    // floating + button is the element receiving the tap in Telegram.
+    tg?.showAlert?.("Floating new-chat button clicked");
     // No API call here on purpose — see isDraftChat above. The chat only
     // actually gets created once the first message sends.
     activeChatId = null;
