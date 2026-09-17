@@ -6,6 +6,14 @@
 //        images together, or a single PDF/.docx/.txt, uploaded first via
 //        blob-upload.js), gets an AI reply, saves and returns it
 //
+// Two optional one-shot flags on the POST body, both text-only (ignored
+// if attachments are present, same reasoning for both — an attachment
+// already goes through its own vision/document path, not the normal
+// conversational one these apply to):
+//   - thinking: trades speed for depth — see lib/ai.js.
+//   - search: looks up current web results before answering — see
+//     lib/search.js for the SearXNG -> Tavily -> Gemini-grounding chain.
+//
 // Two ways to trigger image generation instead of a normal AI reply:
 //   - content starting with "/image <description>" (no attachment) — same
 //     command as the DM bot's /image, kept consistent across surfaces.
@@ -31,6 +39,7 @@ import { db } from "../../db/client.js";
 import { chats, messages } from "../../db/schema.js";
 import { requireTelegramUser } from "../../lib/telegramAuth.js";
 import { getConversationReply } from "../../lib/ai.js";
+import { searchWeb } from "../../lib/search.js";
 import { analyzeAttachments } from "../../lib/attachments.js";
 import { generateImage, extractImageGenMarker } from "../../lib/imagegen.js";
 import { isMemoryEnabled, listMemories, saveMemory, extractMemoryMarker, MEMORY_LIMIT } from "../../lib/memory.js";
@@ -44,6 +53,8 @@ import {
   checkChatAttachmentLimit,
   checkThinkingLimit,
   recordThinkingUsage,
+  checkSearchLimit,
+  recordSearchUsage,
 } from "../../lib/limits.js";
 
 async function loadOwnedChat(chatId, telegramUserId) {
@@ -127,11 +138,12 @@ export default async function handler(req, res) {
   }
 
   if (req.method === "POST") {
-    const { chatId, content, attachments: rawAttachments, thinking } = req.body || {};
+    const { chatId, content, attachments: rawAttachments, thinking, search } = req.body || {};
     const attachments = Array.isArray(rawAttachments) ? rawAttachments : [];
     const hasAttachment = attachments.length > 0;
     const trimmedContent = (content || "").trim();
     const wantsThinking = !!thinking && !hasAttachment; // thinking mode is text-only, same as the DM bot's /think
+    const wantsSearch = !!search && !hasAttachment; // search mode is text-only too — an attachment already goes through its own vision/document path below, unrelated to web search
 
     if (!chatId || (!trimmedContent && !hasAttachment)) {
       res.status(400).json({ error: "chatId and content (or at least one attachment) are required" });
@@ -157,6 +169,14 @@ export default async function handler(req, res) {
       const thinkingCheck = await checkThinkingLimit(user.id);
       if (!thinkingCheck.allowed) {
         res.status(429).json({ error: "rate_limited", message: thinkingCheck.reason });
+        return;
+      }
+    }
+
+    if (wantsSearch) {
+      const searchCheck = await checkSearchLimit(user.id);
+      if (!searchCheck.allowed) {
+        res.status(429).json({ error: "rate_limited", message: searchCheck.reason });
         return;
       }
     }
@@ -222,20 +242,37 @@ export default async function handler(req, res) {
         .from(messages)
         .where(eq(messages.chatId, chat.id))
         .orderBy(asc(messages.createdAt));
+      const historyForAi = history.map((m) => ({ role: m.role, content: m.content }));
 
       const memoryOn = await isMemoryEnabled(user.id);
       const savedMemories = memoryOn ? (await listMemories(user.id)).map((m) => m.content) : [];
+      const memoryOptions = { savedMemories, allowMemorySave: memoryOn };
 
-      const result = await getConversationReply(
-        history.map((m) => ({ role: m.role, content: m.content })),
-        { savedMemories, allowMemorySave: memoryOn },
-        { thinking: wantsThinking }
-      );
+      // Search mode: try to get web results (or, as a last resort, a
+      // fully-written grounded answer) BEFORE asking Groq/Gemini for the
+      // real reply, so the results can be handed to whichever of the two
+      // actually answers — see lib/search.js for the SearXNG -> Tavily ->
+      // Gemini-grounding chain and what each outcome shape means.
+      let searchOutcome = null;
+      if (wantsSearch) {
+        searchOutcome = await searchWeb(trimmedContent, historyForAi, memoryOptions, user.id);
+      }
+
+      let result;
+      if (searchOutcome?.groundedReply) {
+        // Gemini already searched and wrote the final answer itself —
+        // nothing left to do but use it, same shape as a normal reply.
+        result = searchOutcome.groundedReply;
+      } else {
+        if (searchOutcome?.results) memoryOptions.searchResults = searchOutcome.results;
+        result = await getConversationReply(historyForAi, memoryOptions, { thinking: wantsThinking });
+      }
       rawReply = result.text;
       tokensUsed = result.tokensUsed;
     }
     await recordMessageUsage(user.id, tokensUsed);
     if (wantsThinking) await recordThinkingUsage(user.id);
+    if (wantsSearch) await recordSearchUsage(user.id);
 
     // Natural-language image request, detected by the model itself rather
     // than a literal /image command — e.g. "generate an image of a cat

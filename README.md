@@ -168,6 +168,75 @@ Setup:
    `BLOB_READ_WRITE_TOKEN` for you automatically.
 2. That's it — no further config. Redeploy and the 📎 button works.
 
+### Web search
+
+A 🔍 toggle next to Think in the mini app's composer — tap it once, it
+applies to your next message only (same one-shot pattern as Think), and
+tells the bot to look up current web results before answering instead of
+relying only on what the model already knows.
+
+**How it decides where to search:** `lib/search.js` tries three sources in
+order, falling through to the next only if the one before it is
+unconfigured or fails:
+
+1. **Self-hosted SearXNG** (`SEARXNG_URL`) — a metasearch engine you host
+   yourself, free with no per-query cap, since nothing is billing you per
+   search. The trade-off: it's a real service you have to stand up and
+   keep running, and a free-tier host can go to sleep after a stretch of
+   no traffic (see setup below).
+2. **Tavily** (`TAVILY_API_KEY`) — a hosted search API built for feeding
+   LLMs, free up to 1,000 searches/month, no card required. Catches
+   SearXNG being asleep, down, or not set up yet.
+3. **Gemini's own Google Search grounding** — the true last resort, and
+   different in kind from the two above: instead of a list of raw results
+   to hand to whichever model answers (Groq or Gemini), Gemini searches
+   *and* writes the final answer itself in one call. Reuses the
+   `GEMINI_API_KEY` you already have set — no extra key needed. Free up to
+   5,000 grounded prompts/month as of writing; check
+   [ai.google.dev/pricing](https://ai.google.dev/pricing) if that's
+   changed since you're reading this.
+
+Leave `SEARXNG_URL` and `TAVILY_API_KEY` both unset and the feature still
+works — it just goes straight to Gemini grounding every time. If *all
+three* fail for a given search (rare, since Gemini grounding is the
+fallback of the fallback), the bot answers without search context rather
+than erroring the message out.
+
+**Setting up SearXNG (optional — the only one of the three with no
+per-query cap at all):**
+
+1. Deploy [SearXNG](https://github.com/searxng/searxng) to a host that
+   runs a persistent service — Vercel can't do this (serverless functions
+   only, no long-running containers). [Render](https://render.com)'s free
+   web-service tier works well: create a new Web Service from SearXNG's
+   own `Dockerfile`, deploy.
+2. Set `SEARXNG_URL` to that service's URL, e.g.
+   `https://your-searxng.onrender.com`.
+3. Redeploy this project.
+
+Worth knowing: Render's free tier sleeps a service after 15 minutes with
+no incoming requests, and the next request after that pays a one-time
+cold-start cost (roughly 15-60 seconds, not a fixed number). `lib/search.js`
+budgets for this — it only gives SearXNG a 9-second window before falling
+through to Tavily, so a sleeping instance costs the user a few extra
+seconds, not the full cold-boot wait. If search mode gets used at least
+once every 15 minutes by anyone, the service simply stays warm and every
+search is fast. (Deliberately not using a keep-alive cron ping to force it
+to always stay warm — Render's own support has said that goes against the
+spirit of the free tier.)
+
+**Setting up Tavily:** sign up at [tavily.com](https://tavily.com), copy
+your API key from the dashboard, set `TAVILY_API_KEY`. No card required
+for the free tier.
+
+**Limits:** same one-shot-per-message shape as `/think`, enforced the same
+way — a `searchPerDay` cap per tier in `TIER_LIMITS` (`lib/limits.js`),
+checked/recorded via `checkSearchLimit`/`recordSearchUsage` right next to
+the existing `checkThinkingLimit`/`recordThinkingUsage` calls. This mainly
+exists to bound how much of Tavily's and Gemini-grounding's free monthly
+quota one user could burn through in a day — SearXNG itself has no such
+cap to protect, since nothing bills you per search there.
+
 ## Image generation
 
 - Uses Pollinations.ai's `image.pollinations.ai` endpoint — genuinely free,
@@ -233,6 +302,7 @@ owner, are exempt from all of it:
 | Attachments per chat (lifetime) | 2 | 100 | 100,000 (shown to users as "Unlimited") |
 | Image generations | 3 / 30 days | 10 / 30 days | 1000 / 30 days (shown to users as "Unlimited") |
 | `/think` uses | 3 / day | 15 / day | 40 / day |
+| 🔍 Search uses | 5 / day | 40 / day | 200 / day |
 | Video generation | 🚧 under production — see note below | | |
 
 Free's numbers above are the *base* tier — a given free user's actual
@@ -250,6 +320,14 @@ next to the attach button — tap it once, it applies to your next message
 only, then turns itself back off — going through the same `checkThinkingLimit`/
 `recordThinkingUsage` calls in `lib/limits.js`, so the daily cap is shared
 across the DM and the mini app rather than being two separate quotas.
+
+🔍 Search mode works the same one-shot way — tap it once in the composer,
+applies to your next message only, then turns itself back off. Unlike
+`/think`, it's mini-app-only (there's no DM equivalent yet), and its daily
+cap (`searchPerDay`) is really there to bound how much of Tavily's and
+Gemini-grounding's *free* monthly quota one user could burn through in a
+day, not to ration a paid resource of your own — see "Web search" under
+"Mini app" above for the full setup.
 
 Worth knowing on "images per message": Gemini's own technical ceiling is
 much higher than any of these numbers (thousands of images, bounded mainly

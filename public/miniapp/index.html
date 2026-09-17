@@ -147,6 +147,49 @@
     box-shadow: -8px 0 24px rgba(0, 0, 0, 0.15);
   }
   .menu-drawer.open { transform: translateX(0); }
+
+  /* --- Chat-history drawer (mirrors the menu drawer above, but slides
+     in from the left instead of the right, and gets its own overlay so
+     the two drawers never fight over shared open/close state) --- */
+  .chat-drawer-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 40;
+    background: rgba(0, 0, 0, 0);
+    transition: background 0.25s ease;
+  }
+  .chat-drawer-overlay.visible { background: rgba(0, 0, 0, 0.4); }
+  .chat-drawer {
+    position: fixed;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    width: 78%;
+    max-width: 300px;
+    z-index: 41;
+    background: var(--bg);
+    display: flex;
+    flex-direction: column;
+    transform: translateX(-100%);
+    transition: transform 0.28s cubic-bezier(0.32, 0.72, 0, 1);
+    box-shadow: 8px 0 24px rgba(0, 0, 0, 0.15);
+  }
+  .chat-drawer.open { transform: translateX(0); }
+  .chat-drawer-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 16px 16px 12px;
+    padding-top: calc(16px + var(--tg-content-safe-top));
+    border-bottom: 1px solid var(--section-separator);
+    flex-shrink: 0;
+  }
+  .chat-drawer-header h2 {
+    font-size: 16.5px;
+    font-weight: 600;
+    margin: 0;
+  }
   .menu-header {
     display: flex;
     flex-direction: column;
@@ -360,12 +403,35 @@
 
   .composer {
     display: flex;
-    align-items: flex-end;
-    gap: 8px;
+    flex-direction: column;
+    gap: 6px;
     padding: 8px 10px;
     padding-bottom: max(8px, env(safe-area-inset-bottom));
     border-top: 1px solid var(--section-separator);
     background: var(--bg);
+    flex-shrink: 0;
+  }
+  .composer-input-row {
+    display: flex;
+    align-items: flex-end;
+    gap: 8px;
+  }
+  .composer-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
+  .composer-toolbar-left {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+  }
+  .composer-toolbar-right {
+    display: flex;
+    align-items: center;
+    gap: 2px;
     flex-shrink: 0;
   }
   #attach-btn {
@@ -373,16 +439,25 @@
     padding: 6px 4px;
     flex-shrink: 0;
   }
-  #think-toggle-btn {
-    font-size: 18px;
-    padding: 6px 4px;
-    flex-shrink: 0;
-    border-radius: 8px;
-    opacity: 0.55;
+  .mode-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    border: 1px solid var(--section-separator);
+    background: none;
+    color: var(--hint);
+    border-radius: 16px;
+    padding: 6px 12px;
+    font-size: 13px;
+    font-weight: 500;
+    line-height: 1;
+    cursor: pointer;
+    white-space: nowrap;
   }
-  #think-toggle-btn.active {
-    opacity: 1;
+  .mode-pill.active {
     background: var(--button);
+    border-color: var(--button);
+    color: var(--button-text);
   }
   .attachment-chips {
     display: flex;
@@ -689,15 +764,25 @@
     <header class="topbar">
       <button id="back-btn" class="icon-btn" aria-label="Back">‹</button>
       <h1 id="chat-title">Chat</h1>
+      <button id="chat-history-btn" class="icon-btn" aria-label="Chat history">☰</button>
     </header>
     <div id="messages" class="messages"></div>
     <div id="attachment-chips" class="attachment-chips" hidden></div>
     <form id="composer" class="composer">
-      <button type="button" id="attach-btn" class="icon-btn" aria-label="Attach file">📎</button>
-      <button type="button" id="think-toggle-btn" class="icon-btn" aria-label="Think mode">🧠</button>
-      <input type="file" id="file-input" accept="image/*,application/pdf,.docx,.txt" multiple hidden />
-      <textarea id="input" placeholder="Message" rows="1"></textarea>
-      <button id="send-btn" class="send-btn" type="submit" aria-label="Send">➤</button>
+      <div class="composer-input-row">
+        <input type="file" id="file-input" accept="image/*,application/pdf,.docx,.txt" multiple hidden />
+        <textarea id="input" placeholder="Message" rows="1"></textarea>
+        <button id="send-btn" class="send-btn" type="submit" aria-label="Send">➤</button>
+      </div>
+      <div class="composer-toolbar">
+        <div class="composer-toolbar-left">
+          <button type="button" id="think-toggle-btn" class="mode-pill" aria-label="Think mode">🧠 Think</button>
+          <button type="button" id="search-toggle-btn" class="mode-pill" aria-label="Search mode">🔍 Search</button>
+        </div>
+        <div class="composer-toolbar-right">
+          <button type="button" id="attach-btn" class="icon-btn" aria-label="Attach file">📎</button>
+        </div>
+      </div>
     </form>
   </div>
 
@@ -798,6 +883,15 @@
   </div>
 </aside>
 
+<div id="chat-drawer-overlay" class="chat-drawer-overlay" hidden></div>
+<aside id="chat-drawer" class="chat-drawer">
+  <div class="chat-drawer-header">
+    <h2>Chats</h2>
+    <button type="button" id="chat-drawer-new-btn" class="icon-btn" aria-label="New chat">+</button>
+  </div>
+  <div id="chat-drawer-list" class="chat-list"></div>
+</aside>
+
 <script type="module">
   // ESM import via CDN since this is a single static file with no build
   // step — @vercel/blob/client is Vercel's own browser-side helper, pinned
@@ -839,6 +933,8 @@
   const attachBtn = document.getElementById("attach-btn");
   const thinkToggleBtn = document.getElementById("think-toggle-btn");
   let thinkingEnabled = false;
+  const searchToggleBtn = document.getElementById("search-toggle-btn");
+  let searchEnabled = false;
   const fileInputEl = document.getElementById("file-input");
   const attachmentChipsEl = document.getElementById("attachment-chips");
   const newChatBtn = document.getElementById("new-chat-fab");
@@ -847,6 +943,11 @@
   const brandBtn = document.getElementById("open-menu-brand");
   const menuOverlay = document.getElementById("menu-overlay");
   const menuDrawer = document.getElementById("menu-drawer");
+  const chatHistoryBtn = document.getElementById("chat-history-btn");
+  const chatDrawerOverlay = document.getElementById("chat-drawer-overlay");
+  const chatDrawer = document.getElementById("chat-drawer");
+  const chatDrawerListEl = document.getElementById("chat-drawer-list");
+  const chatDrawerNewBtn = document.getElementById("chat-drawer-new-btn");
   const settingsBackBtn = document.getElementById("settings-back-btn");
   const openSettingsBtn = document.getElementById("open-settings-btn");
   const themeSegmented = document.getElementById("theme-segmented");
@@ -1412,9 +1513,14 @@
     }
   }
 
-  function renderChatList(chats) {
-    chatListEl.innerHTML = "";
-    emptyStateEl.hidden = chats.length > 0;
+  // `container` defaults to the list view's own chat list, but the same
+  // renderer also feeds the chat-history drawer (see loadChatDrawerList
+  // below) — the only difference there is that picking a row should also
+  // close the drawer, and the "no chats yet" empty-state card lives only
+  // in the list view, not the drawer.
+  function renderChatList(chats, container = chatListEl) {
+    container.innerHTML = "";
+    if (container === chatListEl) emptyStateEl.hidden = chats.length > 0;
     for (const chat of chats) {
       const row = document.createElement("div");
       row.className = "chat-row";
@@ -1425,8 +1531,11 @@
         </div>`;
       row.querySelector(".chat-row-title").textContent = chat.title;
       row.querySelector(".chat-row-time").textContent = relativeTime(chat.updatedAt);
-      row.addEventListener("click", () => openChat(chat.id, chat.title));
-      chatListEl.appendChild(row);
+      row.addEventListener("click", () => {
+        openChat(chat.id, chat.title);
+        if (container !== chatListEl) closeChatDrawer();
+      });
+      container.appendChild(row);
     }
   }
 
@@ -1438,6 +1547,35 @@
       showAuthError(err.message);
     }
   }
+
+  // --- Chat-history drawer (left side, opened from within an open chat) ---
+  async function loadChatDrawerList() {
+    try {
+      const chats = await apiFetch("/api/miniapp/chats");
+      renderChatList(chats, chatDrawerListEl);
+    } catch (err) {
+      chatDrawerListEl.innerHTML = `<div class="memory-empty">Couldn't load chats: ${err.message}</div>`;
+    }
+  }
+  function openChatDrawer() {
+    chatDrawerOverlay.hidden = false;
+    requestAnimationFrame(() => {
+      chatDrawerOverlay.classList.add("visible");
+      chatDrawer.classList.add("open");
+    });
+    loadChatDrawerList();
+  }
+  function closeChatDrawer() {
+    chatDrawerOverlay.classList.remove("visible");
+    chatDrawer.classList.remove("open");
+    setTimeout(() => { chatDrawerOverlay.hidden = true; }, 250);
+  }
+  chatHistoryBtn.addEventListener("click", openChatDrawer);
+  chatDrawerOverlay.addEventListener("click", closeChatDrawer);
+  chatDrawerNewBtn.addEventListener("click", () => {
+    closeChatDrawer();
+    startNewChat();
+  });
 
   function showAuthError(message) {
     document.getElementById("view-list").innerHTML =
@@ -1578,16 +1716,18 @@
     inputEl.focus();
   }
 
-  newChatBtn.addEventListener("click", () => {
-    // No API call here on purpose — see isDraftChat above. The chat only
-    // actually gets created once the first message sends.
+  // No API call here on purpose — see isDraftChat above. The chat only
+  // actually gets created once the first message sends. Shared by the
+  // list view's + FAB and the chat-history drawer's + button.
+  function startNewChat() {
     activeChatId = null;
     isDraftChat = true;
     chatTitleEl.textContent = "New chat";
     messagesEl.innerHTML = "";
     showChatView();
     inputEl.focus();
-  });
+  }
+  newChatBtn.addEventListener("click", startNewChat);
 
   backBtn.addEventListener("click", () => {
     showListView();
@@ -1599,6 +1739,12 @@
   thinkToggleBtn.addEventListener("click", () => {
     thinkingEnabled = !thinkingEnabled;
     thinkToggleBtn.classList.toggle("active", thinkingEnabled);
+    tg?.HapticFeedback?.impactOccurred?.("light");
+  });
+
+  searchToggleBtn.addEventListener("click", () => {
+    searchEnabled = !searchEnabled;
+    searchToggleBtn.classList.toggle("active", searchEnabled);
     tg?.HapticFeedback?.impactOccurred?.("light");
   });
 
@@ -1667,6 +1813,9 @@
     const useThinking = thinkingEnabled;
     thinkingEnabled = false;
     thinkToggleBtn.classList.remove("active"); // one-shot per message, same as the DM bot's /think
+    const useSearch = searchEnabled;
+    searchEnabled = false;
+    searchToggleBtn.classList.remove("active"); // one-shot per message, same pattern as Think
 
     if (isDraftChat) {
       // First message in a fresh chat — create the real row now, not back
@@ -1726,7 +1875,7 @@
 
       const reply = await apiFetch("/api/miniapp/messages", {
         method: "POST",
-        body: JSON.stringify({ chatId: activeChatId, content: text, attachments: uploadedAttachments, thinking: useThinking }),
+        body: JSON.stringify({ chatId: activeChatId, content: text, attachments: uploadedAttachments, thinking: useThinking, search: useSearch }),
       });
       typingEl.remove();
       renderBubble("assistant", reply.content, reply.attachments || null);
