@@ -15,6 +15,15 @@ export const chats = pgTable(
     title: text("title").notNull().default("New chat"),
     createdAt: timestamp("created_at").notNull().defaultNow(),
     updatedAt: timestamp("updated_at").notNull().defaultNow(),
+    // Lets a quick follow-up right after a searched reply reuse that
+    // search's context instead of triggering a brand-new search or
+    // answering ungrounded — see condenseSearchOutcomeForCache in
+    // lib/search.js and the reuse block in api/miniapp/messages.js.
+    // Both null until the first search in this chat; overwritten (not
+    // accumulated) by every search after that, so this only ever holds
+    // the most recent one.
+    lastSearchContext: text("last_search_context"),
+    lastSearchAt: timestamp("last_search_at"),
   },
   (table) => ({
     userIdx: index("chats_telegram_user_id_idx").on(table.telegramUserId),

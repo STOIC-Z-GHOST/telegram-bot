@@ -39,7 +39,7 @@ import { db } from "../../db/client.js";
 import { chats, messages } from "../../db/schema.js";
 import { requireTelegramUser } from "../../lib/telegramAuth.js";
 import { getConversationReply } from "../../lib/ai.js";
-import { searchWeb } from "../../lib/search.js";
+import { searchWeb, condenseSearchOutcomeForCache, SEARCH_CACHE_FRESHNESS_MS } from "../../lib/search.js";
 import { analyzeAttachments } from "../../lib/attachments.js";
 import { generateImage, extractImageGenMarker } from "../../lib/imagegen.js";
 import { isMemoryEnabled, listMemories, saveMemory, extractMemoryMarker, MEMORY_LIMIT } from "../../lib/memory.js";
@@ -229,6 +229,7 @@ export default async function handler(req, res) {
     }
 
     let rawReply, tokensUsed;
+    let searchCacheFields = {}; // merged into the end-of-request chat UPDATE below, only ever set on a successful live search
 
     if (hasAttachment) {
       const result = await analyzeAttachments(attachments, trimmedContent);
@@ -253,9 +254,19 @@ export default async function handler(req, res) {
       // real reply, so the results can be handed to whichever of the two
       // actually answers — see lib/search.js for the SearXNG -> Tavily ->
       // Gemini-grounding chain and what each outcome shape means.
+      //
+      // Search-off messages get one consolation prize instead: if this
+      // chat searched recently enough (see SEARCH_CACHE_FRESHNESS_MS), reuse
+      // that condensed context rather than answering fully ungrounded —
+      // covers a quick "how"/"why" right after a searched reply without
+      // spending another search or another full grounding call. No DB
+      // write happens on this path; the cache is only ever refreshed by an
+      // actual search below.
       let searchOutcome = null;
       if (wantsSearch) {
         searchOutcome = await searchWeb(trimmedContent, historyForAi, memoryOptions, user.id);
+      } else if (chat.lastSearchContext && chat.lastSearchAt && Date.now() - chat.lastSearchAt.getTime() < SEARCH_CACHE_FRESHNESS_MS) {
+        memoryOptions.cachedSearchContext = chat.lastSearchContext;
       }
 
       let result;
@@ -269,6 +280,16 @@ export default async function handler(req, res) {
       }
       rawReply = result.text;
       tokensUsed = result.tokensUsed;
+
+      // Only overwrites the cache on an actual successful search — a
+      // failed/empty one (condenseSearchOutcomeForCache returns null) or a
+      // cache-reuse turn (searchOutcome stays null, nothing to condense)
+      // both leave whatever's already stored untouched, rather than wiping
+      // a still-good previous cache with nothing.
+      if (wantsSearch) {
+        const condensed = condenseSearchOutcomeForCache(searchOutcome);
+        if (condensed) searchCacheFields = { lastSearchContext: condensed, lastSearchAt: new Date() };
+      }
     }
     await recordMessageUsage(user.id, tokensUsed);
     if (wantsThinking) await recordThinkingUsage(user.id);
@@ -316,7 +337,7 @@ export default async function handler(req, res) {
           return { title: titleSource.length > 40 ? `${titleSource.slice(0, 40)}…` : titleSource };
         })()
       : {};
-    await db.update(chats).set({ updatedAt: new Date(), ...titleFields }).where(eq(chats.id, chat.id));
+    await db.update(chats).set({ updatedAt: new Date(), ...titleFields, ...searchCacheFields }).where(eq(chats.id, chat.id));
 
     res.status(201).json(assistantMessage);
     return;
