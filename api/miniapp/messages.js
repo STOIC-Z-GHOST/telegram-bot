@@ -6,13 +6,19 @@
 //        images together, or a single PDF/.docx/.txt, uploaded first via
 //        blob-upload.js), gets an AI reply, saves and returns it
 //
-// Two optional one-shot flags on the POST body, both text-only (ignored
-// if attachments are present, same reasoning for both — an attachment
+// Three optional one-shot flags on the POST body, all text-only (ignored
+// if attachments are present, same reasoning throughout — an attachment
 // already goes through its own vision/document path, not the normal
 // conversational one these apply to):
 //   - thinking: trades speed for depth — see lib/ai.js.
 //   - search: looks up current web results before answering — see
 //     lib/search.js for the SearXNG -> Tavily -> Gemini-grounding chain.
+//   - tier ("flash" | "standard" | "max" | "extra", default "standard"):
+//     picks which model answers — see MODEL_TIER_MIN_PLAN and
+//     getConversationReply in lib/ai.js. Validated against the user's
+//     actual subscription below, never trusted as-is from the request —
+//     a free-tier user requesting "extra" silently gets "standard"
+//     instead, same as if they'd never sent the field.
 //
 // Two ways to trigger image generation instead of a normal AI reply:
 //   - content starting with "/image <description>" (no attachment) — same
@@ -38,11 +44,12 @@ import { put } from "@vercel/blob";
 import { db } from "../../db/client.js";
 import { chats, messages } from "../../db/schema.js";
 import { requireTelegramUser } from "../../lib/telegramAuth.js";
-import { getConversationReply } from "../../lib/ai.js";
+import { getConversationReply, MODEL_TIER_MIN_PLAN } from "../../lib/ai.js";
 import { searchWeb, condenseSearchOutcomeForCache, SEARCH_CACHE_FRESHNESS_MS } from "../../lib/search.js";
 import { analyzeAttachments } from "../../lib/attachments.js";
 import { generateImage, extractImageGenMarker } from "../../lib/imagegen.js";
 import { isMemoryEnabled, listMemories, saveMemory, extractMemoryMarker, MEMORY_LIMIT } from "../../lib/memory.js";
+import { getUserTier } from "../../lib/subscriptions.js";
 import {
   checkMessageLimit,
   recordMessageUsage,
@@ -63,6 +70,21 @@ async function loadOwnedChat(chatId, telegramUserId) {
     .from(chats)
     .where(and(eq(chats.id, chatId), eq(chats.telegramUserId, telegramUserId)));
   return chat || null;
+}
+
+// Server-side enforcement for the tier field — the frontend should only
+// ever show a user the tiers their plan unlocks, but this is the real
+// gate: a free-tier user requesting "max" or "extra" (a stale UI, a
+// replayed request, anything) silently gets "standard" instead of an
+// error, same experience as never having sent the field at all.
+const PLAN_RANK = { free: 0, pro: 1, premium: 2 };
+async function resolveModelTier(requestedTier, telegramUserId) {
+  if (!requestedTier || !(requestedTier in MODEL_TIER_MIN_PLAN)) return "standard";
+  const userPlan = await getUserTier(telegramUserId);
+  if (userPlan === "owner") return requestedTier;
+  const required = PLAN_RANK[MODEL_TIER_MIN_PLAN[requestedTier]];
+  const actual = PLAN_RANK[userPlan] ?? 0;
+  return actual >= required ? requestedTier : "standard";
 }
 
 // Shared by both the explicit "/image" path and the natural-language
@@ -138,7 +160,7 @@ export default async function handler(req, res) {
   }
 
   if (req.method === "POST") {
-    const { chatId, content, attachments: rawAttachments, thinking, search } = req.body || {};
+    const { chatId, content, attachments: rawAttachments, thinking, search, tier: requestedTier } = req.body || {};
     const attachments = Array.isArray(rawAttachments) ? rawAttachments : [];
     const hasAttachment = attachments.length > 0;
     const trimmedContent = (content || "").trim();
@@ -248,6 +270,7 @@ export default async function handler(req, res) {
       const memoryOn = await isMemoryEnabled(user.id);
       const savedMemories = memoryOn ? (await listMemories(user.id)).map((m) => m.content) : [];
       const memoryOptions = { savedMemories, allowMemorySave: memoryOn };
+      const modelTier = await resolveModelTier(requestedTier, user.id);
 
       // Search mode: try to get web results (or, as a last resort, a
       // fully-written grounded answer) BEFORE asking Groq/Gemini for the
@@ -276,7 +299,7 @@ export default async function handler(req, res) {
         result = searchOutcome.groundedReply;
       } else {
         if (searchOutcome?.results) memoryOptions.searchResults = searchOutcome.results;
-        result = await getConversationReply(historyForAi, memoryOptions, { thinking: wantsThinking });
+        result = await getConversationReply(historyForAi, memoryOptions, { thinking: wantsThinking, tier: modelTier });
       }
       rawReply = result.text;
       tokensUsed = result.tokensUsed;

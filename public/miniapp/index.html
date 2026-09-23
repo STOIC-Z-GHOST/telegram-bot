@@ -740,7 +740,7 @@
   <div class="splash-logo"><img src="/logo.jpg" alt="" /></div>
   <div class="splash-name" id="splash-name"></div>
   <div class="splash-spacer"></div>
-  <div class="splash-credit">🤖 @assist_ai</div>
+  <div class="splash-credit">🤖 @Chat_assistai</div>
 </div>
 <div id="app">
   <div id="view-list" class="view">
@@ -867,7 +867,7 @@
   <div class="menu-header">
     <div class="menu-avatar"><img src="/logo.jpg" alt="" /></div>
     <div class="menu-bot-name" id="menu-bot-name"></div>
-    <div class="menu-designer">Powered by @assist_ai</div>
+    <div class="menu-designer">Powered by @Chat_assistai</div>
   </div>
   <div class="menu-usage" id="menu-usage" hidden>
     <div class="menu-usage-row" id="menu-usage-messages"></div>
@@ -879,7 +879,7 @@
     </button>
   </nav>
   <div class="menu-footer">
-    <div class="credit-box">@assist_ai · © 2026</div>
+    <div class="credit-box">@Chat_assistai · © 2026</div>
   </div>
 </aside>
 
@@ -1332,7 +1332,7 @@
 
   inviteShareBtn.addEventListener("click", () => {
     const link = inviteLinkInputEl.value;
-    const shareText = "Come chat with me on @assist_ai — it's free 🤖";
+    const shareText = "Come chat with me on @Chat_assistai — it's free 🤖";
     const shareUrl = `https://t.me/share/url?url=${encodeURIComponent(link)}&text=${encodeURIComponent(shareText)}`;
     // Opens Telegram's own native share sheet so the person picks a real
     // contact or group — much more reliable inside Telegram's WebView
@@ -1695,7 +1695,20 @@
     messagesEl.scrollTop = messagesEl.scrollHeight;
   }
 
+  // Search/Think are one-shot per message (reset on send — see the submit
+  // handler below), but that reset only fires if a message actually gets
+  // sent. Leaving one armed and then switching chats instead of sending
+  // used to leave it silently armed for whatever chat you opened next.
+  // Called on every chat switch/new-chat so the toggles never carry over.
+  function resetComposerToggles() {
+    thinkingEnabled = false;
+    thinkToggleBtn.classList.remove("active");
+    searchEnabled = false;
+    searchToggleBtn.classList.remove("active");
+  }
+
   async function openChat(chatId, title) {
+    resetComposerToggles();
     activeChatId = chatId;
     isDraftChat = false;
     chatTitleEl.textContent = title;
@@ -1720,6 +1733,7 @@
   // actually gets created once the first message sends. Shared by the
   // list view's + FAB and the chat-history drawer's + button.
   function startNewChat() {
+    resetComposerToggles();
     activeChatId = null;
     isDraftChat = true;
     chatTitleEl.textContent = "New chat";
