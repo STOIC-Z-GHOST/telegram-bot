@@ -175,6 +175,190 @@
     box-shadow: 8px 0 24px rgba(0, 0, 0, 0.15);
   }
   .chat-drawer.open { transform: translateX(0); }
+
+  /* --- Model-quality bottom sheet ---
+     Deliberately spacious: full-width cards with real line-height and
+     padding, not a dense list — four terse toolbar pills would have been
+     easy to build but this is meant to actually be readable. */
+  .tier-sheet-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 50;
+    background: rgba(0, 0, 0, 0);
+    transition: background 0.25s ease;
+  }
+  .tier-sheet-overlay.visible { background: rgba(0, 0, 0, 0.4); }
+  .tier-sheet {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 51;
+    max-height: 80vh;
+    overflow-y: auto;
+    background: var(--bg);
+    border-radius: 18px 18px 0 0;
+    padding: 10px 18px max(22px, env(safe-area-inset-bottom));
+    transform: translateY(100%);
+    transition: transform 0.28s cubic-bezier(0.32, 0.72, 0, 1);
+    box-shadow: 0 -8px 24px rgba(0, 0, 0, 0.15);
+  }
+  .tier-sheet.open { transform: translateY(0); }
+  .tier-sheet-handle {
+    width: 36px;
+    height: 4px;
+    border-radius: 2px;
+    background: var(--section-separator);
+    margin: 8px auto 16px;
+  }
+  .tier-sheet-title { font-size: 18px; font-weight: 700; margin: 0 0 4px; }
+  .tier-sheet-subtitle { font-size: 13px; color: var(--hint); margin: 0 0 18px; }
+  .tier-sheet-list {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    padding-bottom: 8px;
+  }
+  .tier-card {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    width: 100%;
+    text-align: left;
+    border: 1.5px solid var(--section-separator);
+    border-radius: 16px;
+    padding: 14px 16px;
+    background: var(--secondary-bg);
+    cursor: pointer;
+  }
+  .tier-card.selected { border-color: var(--button); }
+  .tier-card.locked { opacity: 0.55; }
+  .tier-card-icon {
+    font-size: 24px;
+    width: 34px;
+    flex-shrink: 0;
+    text-align: center;
+  }
+  .tier-card-body { flex: 1; min-width: 0; }
+  .tier-card-name { font-size: 15.5px; font-weight: 600; margin-bottom: 3px; }
+  .tier-card-desc { font-size: 12.5px; color: var(--hint); line-height: 1.4; }
+  .tier-card-badge {
+    font-size: 12px;
+    font-weight: 600;
+    flex-shrink: 0;
+    white-space: nowrap;
+    color: var(--button);
+  }
+  .tier-card.locked .tier-card-badge { color: var(--hint); }
+
+  /* --- Standalone web search tab ---
+     A plain results list, not another chat — kept roomy: full-width result
+     cards with real spacing, same instinct as the tier sheet above rather
+     than a dense list of tiny blue links. */
+  .search-form {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 14px 16px;
+    border-bottom: 1px solid var(--section-separator);
+    flex-shrink: 0;
+  }
+  .search-input {
+    flex: 1;
+    min-width: 0;
+    border: none;
+    border-radius: 12px;
+    background: var(--secondary-bg);
+    color: var(--text);
+    padding: 12px 14px;
+    font-size: 15px;
+    font-family: inherit;
+  }
+  .search-input:focus { outline: 2px solid var(--button); outline-offset: 1px; }
+  .search-submit-btn {
+    flex-shrink: 0;
+    border: none;
+    border-radius: 12px;
+    width: 44px;
+    height: 44px;
+    font-size: 18px;
+    background: var(--button);
+    color: var(--button-text);
+    cursor: pointer;
+  }
+  .search-submit-btn:disabled { opacity: 0.5; }
+  .search-results {
+    flex: 1;
+    overflow-y: auto;
+    padding: 18px 16px 24px;
+  }
+  .search-empty-state, .search-status {
+    text-align: center;
+    color: var(--hint);
+    padding: 60px 24px 0;
+    font-size: 14px;
+    line-height: 1.5;
+  }
+  .search-empty-state .headline, .search-status .headline {
+    color: var(--text);
+    font-size: 17px;
+    font-weight: 600;
+    margin: 0 0 8px;
+  }
+  .search-result-list {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+  .search-result-card {
+    display: block;
+    border: 1px solid var(--section-separator);
+    border-radius: 14px;
+    padding: 14px 16px;
+    background: var(--secondary-bg);
+    text-decoration: none;
+    cursor: pointer;
+  }
+  .search-result-domain {
+    font-size: 12px;
+    color: var(--hint);
+    margin-bottom: 4px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .search-result-title {
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--link);
+    margin-bottom: 5px;
+    line-height: 1.35;
+  }
+  .search-result-snippet {
+    font-size: 13px;
+    color: var(--text);
+    opacity: 0.85;
+    line-height: 1.45;
+  }
+  .search-summary-card {
+    border: 1px solid var(--section-separator);
+    border-radius: 14px;
+    padding: 16px;
+    background: var(--secondary-bg);
+  }
+  .search-summary-label {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--hint);
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    margin-bottom: 8px;
+  }
+  .search-summary-text {
+    font-size: 14px;
+    line-height: 1.55;
+    white-space: pre-wrap;
+  }
   .chat-drawer-header {
     display: flex;
     align-items: center;
@@ -258,9 +442,10 @@
     visibility: hidden;
     pointer-events: none;
   }
-  #app:not(.chat-active):not(.settings-active) #view-list,
+  #app:not(.chat-active):not(.settings-active):not(.search-active) #view-list,
   #app.chat-active #view-chat,
-  #app.settings-active #view-settings {
+  #app.settings-active #view-settings,
+  #app.search-active #view-search {
     display: flex;
     pointer-events: auto;
     visibility: visible;
@@ -431,7 +616,7 @@
   .composer-toolbar-right {
     display: flex;
     align-items: center;
-    gap: 2px;
+    gap: 8px;
     flex-shrink: 0;
   }
   #attach-btn {
@@ -740,7 +925,7 @@
   <div class="splash-logo"><img src="/logo.jpg" alt="" /></div>
   <div class="splash-name" id="splash-name"></div>
   <div class="splash-spacer"></div>
-  <div class="splash-credit">🤖 @Chat_assistai</div>
+  <div class="splash-credit">🤖 @assist_ai</div>
 </div>
 <div id="app">
   <div id="view-list" class="view">
@@ -758,6 +943,10 @@
     </div>
     <!-- kept in the list view so it's easy to find; could move to a footer bar later -->
     <button id="new-chat-fab" class="icon-btn" style="position:absolute; right:16px; bottom:20px; background:var(--button); color:var(--button-text); width:48px; height:48px; border-radius:50%; font-size:24px;" aria-label="New chat">+</button>
+    <!-- Mirrors the + FAB on the opposite corner — a secondary/outlined
+         style on purpose so it doesn't compete with + as the primary
+         action. Opens a plain web-search tab, not a chat. -->
+    <button id="search-fab" class="icon-btn" style="position:absolute; left:16px; bottom:20px; background:var(--secondary-bg); color:var(--text); border:1px solid var(--section-separator); width:48px; height:48px; border-radius:50%; font-size:20px;" aria-label="Web search">🔍</button>
   </div>
 
   <div id="view-chat" class="view">
@@ -780,10 +969,28 @@
           <button type="button" id="search-toggle-btn" class="mode-pill" aria-label="Search mode">🔍 Search</button>
         </div>
         <div class="composer-toolbar-right">
+          <button type="button" id="tier-select-btn" class="mode-pill" aria-label="Model quality">💬 Standard ▾</button>
           <button type="button" id="attach-btn" class="icon-btn" aria-label="Attach file">📎</button>
         </div>
       </div>
     </form>
+  </div>
+
+  <div id="view-search" class="view">
+    <header class="topbar">
+      <button id="search-back-btn" class="icon-btn" aria-label="Back">‹</button>
+      <h1>Search the web</h1>
+    </header>
+    <form id="search-form" class="search-form">
+      <input type="search" id="search-input" class="search-input" placeholder="Search anything…" autocomplete="off" enterkeyhint="search" />
+      <button type="submit" id="search-submit-btn" class="search-submit-btn" aria-label="Search">🔍</button>
+    </form>
+    <div id="search-results" class="search-results">
+      <div class="search-empty-state">
+        <p class="headline">Search the web</p>
+        <p>Results come straight from the web, not summarized by AI — the actual sources, like a browser search.</p>
+      </div>
+    </div>
   </div>
 
   <div id="view-settings" class="view">
@@ -867,7 +1074,7 @@
   <div class="menu-header">
     <div class="menu-avatar"><img src="/logo.jpg" alt="" /></div>
     <div class="menu-bot-name" id="menu-bot-name"></div>
-    <div class="menu-designer">Powered by @Chat_assistai</div>
+    <div class="menu-designer">Powered by @assist_ai</div>
   </div>
   <div class="menu-usage" id="menu-usage" hidden>
     <div class="menu-usage-row" id="menu-usage-messages"></div>
@@ -879,7 +1086,7 @@
     </button>
   </nav>
   <div class="menu-footer">
-    <div class="credit-box">@Chat_assistai · © 2026</div>
+    <div class="credit-box">@assist_ai · © 2026</div>
   </div>
 </aside>
 
@@ -891,6 +1098,17 @@
   </div>
   <div id="chat-drawer-list" class="chat-list"></div>
 </aside>
+
+<!-- Model-quality picker: a bottom sheet (not another toolbar pill) on
+     purpose — four options with real descriptions need room to read, not
+     four cramped labels squeezed into the composer row. -->
+<div id="tier-sheet-overlay" class="tier-sheet-overlay" hidden></div>
+<div id="tier-sheet" class="tier-sheet" role="dialog" aria-label="Model quality">
+  <div class="tier-sheet-handle"></div>
+  <h2 class="tier-sheet-title">Model quality</h2>
+  <p class="tier-sheet-subtitle">Applies to every message until you change it.</p>
+  <div id="tier-sheet-list" class="tier-sheet-list"></div>
+</div>
 
 <script type="module">
   // ESM import via CDN since this is a single static file with no build
@@ -935,6 +1153,30 @@
   let thinkingEnabled = false;
   const searchToggleBtn = document.getElementById("search-toggle-btn");
   let searchEnabled = false;
+  // Model-quality tier — unlike Search/Think above this is NOT one-shot:
+  // it's a standing choice that rides along on every message (server
+  // still re-validates it against the user's actual plan every time, see
+  // resolveModelTier in api/miniapp/messages.js) until changed again.
+  const tierSelectBtn = document.getElementById("tier-select-btn");
+  const tierSheetOverlay = document.getElementById("tier-sheet-overlay");
+  const tierSheetEl = document.getElementById("tier-sheet");
+  const tierSheetListEl = document.getElementById("tier-sheet-list");
+  let selectedTier = "standard";
+  let currentUserPlan = null; // "free" | "pro" | "premium" | "owner" — filled in by loadUsage()
+  const MODEL_TIERS = [
+    { id: "flash", icon: "⚡", name: "Flash", desc: "Fastest replies, lighter model — great for quick, simple questions.", minPlan: "free" },
+    { id: "standard", icon: "💬", name: "Standard", desc: "Balanced quality and speed — the default for everyday chat.", minPlan: "free" },
+    { id: "max", icon: "🚀", name: "Max", desc: "A stronger model for harder questions and more detailed answers.", minPlan: "pro" },
+    { id: "extra", icon: "💎", name: "Extra", desc: "Max's model with extra room for long, in-depth replies.", minPlan: "premium" },
+  ];
+  const TIER_PLAN_RANK = { free: 0, pro: 1, premium: 2, owner: 3 };
+  // Standalone web-search tab
+  const searchFabBtn = document.getElementById("search-fab");
+  const searchBackBtn = document.getElementById("search-back-btn");
+  const searchFormEl = document.getElementById("search-form");
+  const searchInputEl = document.getElementById("search-input");
+  const searchSubmitBtn = document.getElementById("search-submit-btn");
+  const searchResultsEl = document.getElementById("search-results");
   const fileInputEl = document.getElementById("file-input");
   const attachmentChipsEl = document.getElementById("attachment-chips");
   const newChatBtn = document.getElementById("new-chat-fab");
@@ -1064,9 +1306,22 @@
     }
   }
 
+  // Search tab only ever opens from the list (mirrors the + FAB it sits
+  // next to), so there's nowhere else to return to on close.
+  function showSearchView() {
+    appEl.className = "search-active";
+    tg?.BackButton?.show();
+    requestAnimationFrame(() => searchInputEl.focus());
+  }
+  function closeSearchView() {
+    showListView();
+  }
+
   tg?.BackButton?.onClick(() => {
     if (appEl.classList.contains("settings-active")) {
       closeSettingsView();
+    } else if (appEl.classList.contains("search-active")) {
+      closeSearchView();
     } else {
       showListView();
     }
@@ -1111,6 +1366,142 @@
   menuBtn.addEventListener("click", openMenu);
   brandBtn.addEventListener("click", openMenu);
   menuOverlay.addEventListener("click", closeMenu);
+
+  // --- Model-quality sheet ---
+  function renderTierSheet() {
+    const rank = TIER_PLAN_RANK[currentUserPlan ?? "free"] ?? 0;
+    tierSheetListEl.innerHTML = MODEL_TIERS.map((t) => {
+      const locked = rank < TIER_PLAN_RANK[t.minPlan];
+      const selected = t.id === selectedTier;
+      const badge = locked ? `🔒 ${t.minPlan.charAt(0).toUpperCase() + t.minPlan.slice(1)}+` : (selected ? "✓ Selected" : "");
+      return `
+        <button type="button" class="tier-card${selected ? " selected" : ""}${locked ? " locked" : ""}" data-tier="${t.id}">
+          <div class="tier-card-icon">${t.icon}</div>
+          <div class="tier-card-body">
+            <div class="tier-card-name">${t.name}</div>
+            <div class="tier-card-desc">${t.desc}</div>
+          </div>
+          <div class="tier-card-badge">${badge}</div>
+        </button>`;
+    }).join("");
+  }
+  async function openTierSheet() {
+    if (currentUserPlan === null) await loadUsage(); // first open before the menu's ever loaded usage — fetch it now rather than showing every tier as locked
+    renderTierSheet();
+    tierSheetOverlay.hidden = false;
+    requestAnimationFrame(() => {
+      tierSheetOverlay.classList.add("visible");
+      tierSheetEl.classList.add("open");
+    });
+  }
+  function closeTierSheet() {
+    tierSheetOverlay.classList.remove("visible");
+    tierSheetEl.classList.remove("open");
+    setTimeout(() => { tierSheetOverlay.hidden = true; }, 250);
+  }
+  tierSelectBtn.addEventListener("click", openTierSheet);
+  tierSheetOverlay.addEventListener("click", closeTierSheet);
+  tierSheetListEl.addEventListener("click", (e) => {
+    const card = e.target.closest(".tier-card");
+    if (!card) return;
+    const tier = MODEL_TIERS.find((t) => t.id === card.dataset.tier);
+    const rank = TIER_PLAN_RANK[currentUserPlan ?? "free"] ?? 0;
+    if (rank < TIER_PLAN_RANK[tier.minPlan]) {
+      // Locked — send them straight to the upgrade section instead of
+      // just refusing the tap.
+      closeTierSheet();
+      openMenu();
+      return;
+    }
+    selectedTier = tier.id;
+    tierSelectBtn.textContent = `${tier.icon} ${tier.name} ▾`;
+    tg?.HapticFeedback?.selectionChanged?.();
+    closeTierSheet();
+  });
+
+  // --- Standalone web search tab ---
+  function renderSearchEmptyState() {
+    searchResultsEl.innerHTML = `
+      <div class="search-empty-state">
+        <p class="headline">Search the web</p>
+        <p>Results come straight from the web, not summarized by AI — the actual sources, like a browser search.</p>
+      </div>`;
+  }
+  function renderSearchStatus(headline, body) {
+    searchResultsEl.innerHTML = `
+      <div class="search-status">
+        <p class="headline">${headline}</p>
+        <p>${body}</p>
+      </div>`;
+  }
+  function domainFrom(url) {
+    try { return new URL(url).hostname.replace(/^www\./, ""); } catch { return ""; }
+  }
+  function renderSearchResults(data) {
+    if (data.summary) {
+      searchResultsEl.innerHTML = `
+        <div class="search-summary-card">
+          <div class="search-summary-label">AI summary — sources unavailable</div>
+          <div class="search-summary-text"></div>
+        </div>`;
+      searchResultsEl.querySelector(".search-summary-text").textContent = data.summary;
+      return;
+    }
+    if (!data.results || data.results.length === 0) {
+      renderSearchStatus("No results", "Try a different search.");
+      return;
+    }
+    const list = document.createElement("div");
+    list.className = "search-result-list";
+    data.results.forEach((r) => {
+      const card = document.createElement("a");
+      card.className = "search-result-card";
+      card.href = r.url;
+      card.target = "_blank";
+      card.rel = "noopener noreferrer";
+      const domainEl = document.createElement("div");
+      domainEl.className = "search-result-domain";
+      domainEl.textContent = domainFrom(r.url);
+      const titleEl = document.createElement("div");
+      titleEl.className = "search-result-title";
+      titleEl.textContent = r.title || r.url;
+      const snippetEl = document.createElement("div");
+      snippetEl.className = "search-result-snippet";
+      snippetEl.textContent = r.snippet || "";
+      card.append(domainEl, titleEl, snippetEl);
+      card.addEventListener("click", (e) => {
+        // Telegram web views often swallow a plain target=_blank tap —
+        // hand it to Telegram's own external-link opener when available.
+        if (tg?.openLink) {
+          e.preventDefault();
+          tg.openLink(r.url);
+        }
+      });
+      list.appendChild(card);
+    });
+    searchResultsEl.innerHTML = "";
+    searchResultsEl.appendChild(list);
+  }
+  searchFabBtn.addEventListener("click", showSearchView);
+  searchBackBtn.addEventListener("click", closeSearchView);
+  searchFormEl.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const query = searchInputEl.value.trim();
+    if (!query) return;
+    searchSubmitBtn.disabled = true;
+    renderSearchStatus("Searching…", "Checking the web for real sources.");
+    try {
+      const data = await apiFetch("/api/miniapp/web-search", {
+        method: "POST",
+        body: JSON.stringify({ query }),
+      });
+      renderSearchResults(data);
+    } catch (err) {
+      renderSearchStatus("Search failed", err.message);
+    } finally {
+      searchSubmitBtn.disabled = false;
+    }
+  });
 
   openSettingsBtn.addEventListener("click", () => {
     closeMenu();
@@ -1284,6 +1675,7 @@
     try {
       const data = await apiFetch("/api/miniapp/usage");
       if (data.maxImagesPerMessage) maxImagesPerMessage = data.maxImagesPerMessage;
+      currentUserPlan = data.isOwner ? "owner" : data.tier;
       if (data.isOwner) {
         // No usage limits or upgrade options for the owner — those don't
         // apply — but the invite section still shows, purely so the
@@ -1332,7 +1724,7 @@
 
   inviteShareBtn.addEventListener("click", () => {
     const link = inviteLinkInputEl.value;
-    const shareText = "Come chat with me on @Chat_assistai — it's free 🤖";
+    const shareText = "Come chat with me on @assist_ai — it's free 🤖";
     const shareUrl = `https://t.me/share/url?url=${encodeURIComponent(link)}&text=${encodeURIComponent(shareText)}`;
     // Opens Telegram's own native share sheet so the person picks a real
     // contact or group — much more reliable inside Telegram's WebView
@@ -1889,7 +2281,7 @@
 
       const reply = await apiFetch("/api/miniapp/messages", {
         method: "POST",
-        body: JSON.stringify({ chatId: activeChatId, content: text, attachments: uploadedAttachments, thinking: useThinking, search: useSearch }),
+        body: JSON.stringify({ chatId: activeChatId, content: text, attachments: uploadedAttachments, thinking: useThinking, search: useSearch, tier: selectedTier }),
       });
       typingEl.remove();
       renderBubble("assistant", reply.content, reply.attachments || null);

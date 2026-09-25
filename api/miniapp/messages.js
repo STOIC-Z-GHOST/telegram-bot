@@ -20,6 +20,14 @@
 //     a free-tier user requesting "extra" silently gets "standard"
 //     instead, same as if they'd never sent the field.
 //
+// "/review <code or question>" (no attachment) — a fourth trigger, text-only
+// like the three flags above: swaps in an adversarial code-reviewer system
+// prompt + low temperature + forced thinking depth for just that one reply.
+// See CODE_REVIEW_INSTRUCTION in lib/ai.js. Not gated behind its own limit —
+// reuses checkThinkingLimit, same as the thinking flag. Also forces the
+// search flag off for that message even if it was left on — see wantsSearch
+// below.
+//
 // Two ways to trigger image generation instead of a normal AI reply:
 //   - content starting with "/image <description>" (no attachment) — same
 //     command as the DM bot's /image, kept consistent across surfaces.
@@ -165,7 +173,21 @@ export default async function handler(req, res) {
     const hasAttachment = attachments.length > 0;
     const trimmedContent = (content || "").trim();
     const wantsThinking = !!thinking && !hasAttachment; // thinking mode is text-only, same as the DM bot's /think
-    const wantsSearch = !!search && !hasAttachment; // search mode is text-only too — an attachment already goes through its own vision/document path below, unrelated to web search
+    // "/review <code or question>" — a text command (not a UI toggle, unlike
+    // thinking/search above) that swaps in the adversarial code-reviewer
+    // system prompt for just this one reply. See CODE_REVIEW_INSTRUCTION in
+    // lib/ai.js. Always paired with real thinking-mode depth below since a
+    // review is only useful with the deeper reasoning pass.
+    const reviewMatch = !hasAttachment && trimmedContent.match(/^\/review\s+([\s\S]+)/i);
+    const isBareReviewCommand = !hasAttachment && /^\/review$/i.test(trimmedContent);
+    const wantsCodeReview = !!reviewMatch;
+    // search mode is text-only too — an attachment already goes through its
+    // own vision/document path below, unrelated to web search. Also forced
+    // off for a /review: the toggle's value is whatever was left over from
+    // an earlier message (see the mini app's one-shot reset), and a web
+    // search on the literal "/review <pasted code>" text never returns
+    // anything useful — it'd just burn a search-quota unit for nothing.
+    const wantsSearch = !!search && !hasAttachment && !wantsCodeReview;
 
     if (!chatId || (!trimmedContent && !hasAttachment)) {
       res.status(400).json({ error: "chatId and content (or at least one attachment) are required" });
@@ -187,7 +209,7 @@ export default async function handler(req, res) {
       return;
     }
 
-    if (wantsThinking) {
+    if (wantsThinking || wantsCodeReview) {
       const thinkingCheck = await checkThinkingLimit(user.id);
       if (!thinkingCheck.allowed) {
         res.status(429).json({ error: "rate_limited", message: thinkingCheck.reason });
@@ -227,6 +249,11 @@ export default async function handler(req, res) {
 
     if (isBareImageCommand) {
       res.status(400).json({ error: "bad_command", message: "Send it like: /image a red fox in a snowy forest" });
+      return;
+    }
+
+    if (isBareReviewCommand) {
+      res.status(400).json({ error: "bad_command", message: "Send it like: /review <paste your code or describe what to review>" });
       return;
     }
 
@@ -299,7 +326,11 @@ export default async function handler(req, res) {
         result = searchOutcome.groundedReply;
       } else {
         if (searchOutcome?.results) memoryOptions.searchResults = searchOutcome.results;
-        result = await getConversationReply(historyForAi, memoryOptions, { thinking: wantsThinking, tier: modelTier });
+        result = await getConversationReply(historyForAi, memoryOptions, {
+          thinking: wantsThinking || wantsCodeReview,
+          codeReview: wantsCodeReview,
+          tier: modelTier,
+        });
       }
       rawReply = result.text;
       tokensUsed = result.tokensUsed;
