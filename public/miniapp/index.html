@@ -482,21 +482,67 @@
     border-radius: 8px;
   }
   .icon-btn:active { background: var(--section-separator); }
+  .topbar-text-btn {
+    background: none;
+    border: none;
+    color: var(--link);
+    font-size: 15px;
+    font-weight: 500;
+    padding: 6px 10px;
+    cursor: pointer;
+    flex-shrink: 0;
+  }
 
   /* --- Chat list --- */
   .chat-list { flex: 1; overflow-y: auto; }
   .chat-row {
     display: flex;
-    flex-direction: column;
-    gap: 3px;
+    align-items: center;
+    gap: 12px;
     padding: 12px 16px;
     border-bottom: 1px solid var(--section-separator);
     cursor: pointer;
   }
   .chat-row:active { background: var(--secondary-bg); }
+  .chat-row-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
   .chat-row-top { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
   .chat-row-title { font-size: 15.5px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .chat-row-time { font-size: 12.5px; color: var(--hint); flex-shrink: 0; }
+  /* Checkbox column only takes up space in Select mode — kept out of the
+     way entirely otherwise rather than a tiny always-there tap target. */
+  .chat-row-checkbox {
+    display: none;
+    flex-shrink: 0;
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    border: 1.5px solid var(--section-separator);
+  }
+  #chat-list.select-mode .chat-row-checkbox { display: block; }
+  .chat-row.selected .chat-row-checkbox { background: var(--button); border-color: var(--button); }
+  .chat-row.selected { background: var(--secondary-bg); }
+  .select-action-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 14px 16px max(14px, env(safe-area-inset-bottom));
+    border-top: 1px solid var(--section-separator);
+    background: var(--header-bg);
+    flex-shrink: 0;
+  }
+  .select-count { font-size: 13.5px; color: var(--hint); }
+  .select-action-btn {
+    border: none;
+    border-radius: 12px;
+    padding: 10px 18px;
+    font-size: 15px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .select-action-btn.secondary { background: var(--secondary-bg); color: var(--text); }
+  .select-action-btn.danger { background: #e0483e; color: #fff; }
+  .select-action-btn:disabled { opacity: 0.5; cursor: default; }
 
   .empty-state {
     flex: 1;
@@ -934,9 +980,17 @@
         <div class="brand-avatar"><img src="/logo.jpg" alt="" /></div>
       </div>
       <h1>Chats</h1>
+      <button id="select-chats-btn" class="topbar-text-btn" aria-label="Select chats">Select</button>
       <button id="menu-btn" class="icon-btn" aria-label="Menu">☰</button>
     </header>
     <div id="chat-list" class="chat-list"></div>
+    <!-- Spacious on purpose, not a squeezed inline toolbar: full-width bar
+         so "N selected" and the two actions all get real tap targets. -->
+    <div id="select-action-bar" class="select-action-bar" hidden>
+      <button type="button" id="select-cancel-btn" class="select-action-btn secondary">Cancel</button>
+      <span id="select-count" class="select-count">0 selected</span>
+      <button type="button" id="select-delete-btn" class="select-action-btn danger" disabled>Delete</button>
+    </div>
     <div id="empty-state" class="empty-state" hidden>
       <p class="headline">No chats yet</p>
       <p>Tap + to start one.</p>
@@ -1143,6 +1197,14 @@
   const appEl = document.getElementById("app");
   const chatListEl = document.getElementById("chat-list");
   const emptyStateEl = document.getElementById("empty-state");
+  // Multi-select delete — main list view only (not the chat-switch drawer).
+  const selectChatsBtn = document.getElementById("select-chats-btn");
+  const selectActionBar = document.getElementById("select-action-bar");
+  const selectCancelBtn = document.getElementById("select-cancel-btn");
+  const selectCountEl = document.getElementById("select-count");
+  const selectDeleteBtn = document.getElementById("select-delete-btn");
+  let selectMode = false;
+  let selectedChatIds = new Set();
   const messagesEl = document.getElementById("messages");
   const chatTitleEl = document.getElementById("chat-title");
   const composerEl = document.getElementById("composer");
@@ -1916,20 +1978,87 @@
     for (const chat of chats) {
       const row = document.createElement("div");
       row.className = "chat-row";
+      row.dataset.chatId = chat.id;
       row.innerHTML = `
-        <div class="chat-row-top">
-          <span class="chat-row-title"></span>
-          <span class="chat-row-time"></span>
+        <div class="chat-row-checkbox"></div>
+        <div class="chat-row-main">
+          <div class="chat-row-top">
+            <span class="chat-row-title"></span>
+            <span class="chat-row-time"></span>
+          </div>
         </div>`;
       row.querySelector(".chat-row-title").textContent = chat.title;
       row.querySelector(".chat-row-time").textContent = relativeTime(chat.updatedAt);
       row.addEventListener("click", () => {
+        // Select mode only ever applies to the main list — the drawer
+        // (container !== chatListEl) always just switches chats.
+        if (selectMode && container === chatListEl) {
+          toggleChatSelected(chat.id, row);
+          return;
+        }
         openChat(chat.id, chat.title);
         if (container !== chatListEl) closeChatDrawer();
       });
       container.appendChild(row);
     }
   }
+
+  // --- Select mode (delete one or more chats) ---
+  function toggleChatSelected(chatId, row) {
+    if (selectedChatIds.has(chatId)) {
+      selectedChatIds.delete(chatId);
+      row.classList.remove("selected");
+    } else {
+      selectedChatIds.add(chatId);
+      row.classList.add("selected");
+    }
+    selectCountEl.textContent = `${selectedChatIds.size} selected`;
+    selectDeleteBtn.disabled = selectedChatIds.size === 0;
+  }
+  function enterSelectMode() {
+    selectMode = true;
+    selectedChatIds.clear();
+    chatListEl.classList.add("select-mode");
+    selectActionBar.hidden = false;
+    selectChatsBtn.hidden = true;
+    selectCountEl.textContent = "0 selected";
+    selectDeleteBtn.disabled = true;
+  }
+  function exitSelectMode() {
+    selectMode = false;
+    selectedChatIds.clear();
+    chatListEl.classList.remove("select-mode");
+    selectActionBar.hidden = true;
+    selectChatsBtn.hidden = false;
+    chatListEl.querySelectorAll(".chat-row.selected").forEach((r) => r.classList.remove("selected"));
+  }
+  selectChatsBtn.addEventListener("click", enterSelectMode);
+  selectCancelBtn.addEventListener("click", exitSelectMode);
+  selectDeleteBtn.addEventListener("click", () => {
+    if (selectedChatIds.size === 0) return;
+    const chatIds = [...selectedChatIds];
+    const label = chatIds.length === 1 ? "this chat" : `these ${chatIds.length} chats`;
+    const doDelete = async () => {
+      try {
+        await apiFetch("/api/miniapp/chats", { method: "DELETE", body: JSON.stringify({ chatIds }) });
+        // If the chat currently open got deleted from the list view while
+        // the app happened to still be pointed at it, drop back to the list
+        // instead of leaving a dead chat on screen.
+        if (activeChatId && chatIds.includes(activeChatId)) {
+          activeChatId = null;
+        }
+        exitSelectMode();
+        loadChats();
+      } catch (err) {
+        tg?.showAlert?.(err.message) ?? alert(err.message);
+      }
+    };
+    if (tg?.showConfirm) {
+      tg.showConfirm(`Delete ${label}? This can't be undone.`, (ok) => ok && doDelete());
+    } else if (confirm(`Delete ${label}? This can't be undone.`)) {
+      doDelete();
+    }
+  });
 
   async function loadChats() {
     try {
