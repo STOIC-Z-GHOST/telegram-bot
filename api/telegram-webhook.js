@@ -707,10 +707,18 @@ export default async function handler(req, res) {
     return;
   }
 
-  if (accessStatus !== "owner" && accessStatus !== "approved") {
-    // "none" or leftover "pending" from before the bot went public —
-    // auto-approve and continue straight into normal handling below, same
-    // request.
+  if (accessStatus === "pending") {
+    // A real re-request is actively sitting in your inbox awaiting
+    // Approve/Deny — must NOT fall into the catch-all below, or their very
+    // next message auto-approves them regardless of what you decide.
+    await sendTelegramMessage(chatId, "Your request is still waiting on the owner — you'll hear back here once it's decided.");
+    res.status(200).send("OK");
+    return;
+  }
+
+  if (accessStatus === "none") {
+    // Genuinely brand new — auto-approve and continue straight into
+    // normal handling below, same request.
     await autoApproveUser(chatId, formatDisplayName(message.from));
   }
 
