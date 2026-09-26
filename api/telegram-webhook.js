@@ -668,23 +668,49 @@ export default async function handler(req, res) {
   // The bot is public: anyone not explicitly banned falls straight through
   // to normal handling below on the free tier, no owner review needed.
   // "denied" is the one real gate left — it's what /remove (banning a
-  // user) sets, via lib/access.js's decideAccessRequest/removeUser. Any
-  // leftover "awaiting_reason"/"pending" rows from before the bot went
-  // public are treated the same as a first-time visitor and waved through.
+  // user) sets, via lib/access.js's decideAccessRequest/removeUser. A
+  // denied user isn't stuck, though: they get a "Request access again"
+  // button, which reuses the same awaiting_reason -> pending -> owner
+  // approve/deny flow this bot used before it went public (see
+  // request_access in handleCallbackQuery above, and submitAccessReason
+  // below) — just re-triggered by a ban instead of a first visit.
   const accessStatus = isOwner(chatId) ? "owner" : await getAccessStatus(chatId);
 
+  if (accessStatus === "awaiting_reason") {
+    // This message itself IS their reason, not a normal chat turn.
+    const updated = await submitAccessReason(chatId, text || "(no reason given)");
+    if (updated) {
+      await sendTelegramMessage(chatId, "Thanks — your request has been sent to the owner. You'll hear back here.");
+      const ownerId = getOwnerChatId();
+      if (ownerId) {
+        await sendTelegramMessageWithKeyboard(
+          ownerId,
+          `🔔 Access re-request from ${updated.displayName || chatId}:\n"${updated.reason}"`,
+          [[
+            { text: "✅ Approve", callback_data: `approve:${chatId}` },
+            { text: "❌ Deny", callback_data: `deny:${chatId}` },
+          ]]
+        );
+      }
+    }
+    res.status(200).send("OK");
+    return;
+  }
+
   if (accessStatus === "denied") {
-    await sendTelegramMessage(
+    await sendTelegramMessageWithKeyboard(
       chatId,
-      "Your access to this bot has been revoked. If you think that's a mistake, reach out to the owner directly."
+      "Your access to this bot has been revoked. If you think that's a mistake, you can send a short note explaining why you'd like it back.",
+      [[{ text: "📝 Request access again", callback_data: "request_access" }]]
     );
     res.status(200).send("OK");
     return;
   }
 
   if (accessStatus !== "owner" && accessStatus !== "approved") {
-    // "none", "awaiting_reason", or "pending" — auto-approve and continue
-    // straight into normal handling below, same request.
+    // "none" or leftover "pending" from before the bot went public —
+    // auto-approve and continue straight into normal handling below, same
+    // request.
     await autoApproveUser(chatId, formatDisplayName(message.from));
   }
 

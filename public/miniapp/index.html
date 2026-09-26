@@ -2023,6 +2023,13 @@
     selectChatsBtn.hidden = true;
     selectCountEl.textContent = "0 selected";
     selectDeleteBtn.disabled = true;
+    // Both FABs float at a fixed bottom position regardless of what else is
+    // on screen — the select-action-bar sitting in normal flow right above
+    // them isn't enough on its own to keep it clear, so hide the FABs
+    // outright while selecting rather than starting a new chat or a search
+    // mid-delete anyway.
+    newChatBtn.hidden = true;
+    searchFabBtn.hidden = true;
   }
   function exitSelectMode() {
     selectMode = false;
@@ -2030,6 +2037,8 @@
     chatListEl.classList.remove("select-mode");
     selectActionBar.hidden = true;
     selectChatsBtn.hidden = false;
+    newChatBtn.hidden = false;
+    searchFabBtn.hidden = false;
     chatListEl.querySelectorAll(".chat-row.selected").forEach((r) => r.classList.remove("selected"));
   }
   selectChatsBtn.addEventListener("click", enterSelectMode);
