@@ -506,8 +506,10 @@
   .chat-row:active { background: var(--secondary-bg); }
   .chat-row-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
   .chat-row-top { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
-  .chat-row-title { font-size: 15.5px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .chat-row-title { flex: 1; min-width: 0; font-size: 15.5px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .chat-row-time { font-size: 12.5px; color: var(--hint); flex-shrink: 0; }
+  .chat-row-pin-icon { display: none; flex-shrink: 0; font-size: 11px; }
+  .chat-row.pinned .chat-row-pin-icon { display: inline; }
   /* Checkbox column only takes up space in Select mode — kept out of the
      way entirely otherwise rather than a tiny always-there tap target. */
   .chat-row-checkbox {
@@ -532,6 +534,7 @@
     flex-shrink: 0;
   }
   .select-count { font-size: 13.5px; color: var(--hint); }
+  .select-action-group { display: flex; gap: 8px; }
   .select-action-btn {
     border: none;
     border-radius: 12px;
@@ -989,7 +992,10 @@
     <div id="select-action-bar" class="select-action-bar" hidden>
       <button type="button" id="select-cancel-btn" class="select-action-btn secondary">Cancel</button>
       <span id="select-count" class="select-count">0 selected</span>
-      <button type="button" id="select-delete-btn" class="select-action-btn danger" disabled>Delete</button>
+      <div class="select-action-group">
+        <button type="button" id="select-pin-btn" class="select-action-btn secondary" disabled>📌 Pin</button>
+        <button type="button" id="select-delete-btn" class="select-action-btn danger" disabled>Delete</button>
+      </div>
     </div>
     <div id="empty-state" class="empty-state" hidden>
       <p class="headline">No chats yet</p>
@@ -1202,6 +1208,7 @@
   const selectActionBar = document.getElementById("select-action-bar");
   const selectCancelBtn = document.getElementById("select-cancel-btn");
   const selectCountEl = document.getElementById("select-count");
+  const selectPinBtn = document.getElementById("select-pin-btn");
   const selectDeleteBtn = document.getElementById("select-delete-btn");
   let selectMode = false;
   let selectedChatIds = new Set();
@@ -1979,10 +1986,13 @@
       const row = document.createElement("div");
       row.className = "chat-row";
       row.dataset.chatId = chat.id;
+      row.dataset.pinned = chat.pinnedAt ? "1" : "";
+      if (chat.pinnedAt) row.classList.add("pinned");
       row.innerHTML = `
         <div class="chat-row-checkbox"></div>
         <div class="chat-row-main">
           <div class="chat-row-top">
+            <span class="chat-row-pin-icon">📌</span>
             <span class="chat-row-title"></span>
             <span class="chat-row-time"></span>
           </div>
@@ -2014,6 +2024,14 @@
     }
     selectCountEl.textContent = `${selectedChatIds.size} selected`;
     selectDeleteBtn.disabled = selectedChatIds.size === 0;
+    selectPinBtn.disabled = selectedChatIds.size === 0;
+    // If every selected row is already pinned, offer to unpin; otherwise
+    // (none pinned, or a mix) the button pins the whole selection — pinning
+    // is the more common intent and avoids a confusing three-way toggle.
+    const rows = [...selectedChatIds].map((id) => chatListEl.querySelector(`.chat-row[data-chat-id="${id}"]`));
+    const allPinned = rows.length > 0 && rows.every((r) => r?.dataset.pinned === "1");
+    selectPinBtn.textContent = allPinned ? "📌 Unpin" : "📌 Pin";
+    selectPinBtn.dataset.action = allPinned ? "unpin" : "pin";
   }
   function enterSelectMode() {
     selectMode = true;
@@ -2023,6 +2041,8 @@
     selectChatsBtn.hidden = true;
     selectCountEl.textContent = "0 selected";
     selectDeleteBtn.disabled = true;
+    selectPinBtn.disabled = true;
+    selectPinBtn.textContent = "📌 Pin";
     // Both FABs float at a fixed bottom position regardless of what else is
     // on screen — the select-action-bar sitting in normal flow right above
     // them isn't enough on its own to keep it clear, so hide the FABs
@@ -2043,6 +2063,18 @@
   }
   selectChatsBtn.addEventListener("click", enterSelectMode);
   selectCancelBtn.addEventListener("click", exitSelectMode);
+  selectPinBtn.addEventListener("click", async () => {
+    if (selectedChatIds.size === 0) return;
+    const chatIds = [...selectedChatIds];
+    const pinned = selectPinBtn.dataset.action !== "unpin";
+    try {
+      await apiFetch("/api/miniapp/chats", { method: "PATCH", body: JSON.stringify({ chatIds, pinned }) });
+      exitSelectMode();
+      loadChats();
+    } catch (err) {
+      tg?.showAlert?.(err.message) ?? alert(err.message);
+    }
+  });
   selectDeleteBtn.addEventListener("click", () => {
     if (selectedChatIds.size === 0) return;
     const chatIds = [...selectedChatIds];

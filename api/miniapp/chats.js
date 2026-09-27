@@ -1,19 +1,22 @@
 // api/miniapp/chats.js
 //
-// GET    -> list the calling user's chats, most recently active first
+// GET    -> list the calling user's chats — pinned first (most-recently-
+//           pinned first), then everything else by last activity
 // POST   -> create a new chat for the calling user
+// PATCH  -> pin or unpin one or more of the calling user's chats
+//           (body: { chatIds: [1, 2, 3], pinned: true|false })
 // DELETE -> delete one or more of the calling user's chats
 //           (body: { chatIds: [1, 2, 3] } or { chatId: 1 })
 //
 // Every request must carry a valid X-Telegram-Init-Data header (see
 // lib/telegramAuth.js) — chats are always scoped to whoever that header
-// proves you are; DELETE only ever touches chats it can prove this user
-// owns. Deleting a chat also deletes its messages (DB cascade, see
-// db/schema.js) and every attachment file those messages point at in
+// proves you are; PATCH and DELETE only ever touch chats they can prove
+// this user owns. Deleting a chat also deletes its messages (DB cascade,
+// see db/schema.js) and every attachment file those messages point at in
 // Vercel Blob — this is meant to actually free the storage behind a chat,
 // not just remove it from the list.
 
-import { eq, and, inArray, desc } from "drizzle-orm";
+import { eq, and, inArray, desc, sql } from "drizzle-orm";
 import { del } from "@vercel/blob";
 import { db } from "../../db/client.js";
 import { chats, messages } from "../../db/schema.js";
@@ -28,7 +31,10 @@ export default async function handler(req, res) {
       .select()
       .from(chats)
       .where(eq(chats.telegramUserId, user.id))
-      .orderBy(desc(chats.updatedAt));
+      // NULLS LAST puts every unpinned chat (pinned_at is null) after every
+      // pinned one regardless of the DESC direction; within the pinned
+      // group DESC then gives most-recently-pinned first.
+      .orderBy(sql`${chats.pinnedAt} DESC NULLS LAST`, desc(chats.updatedAt));
     res.status(200).json(rows);
     return;
   }
@@ -39,6 +45,29 @@ export default async function handler(req, res) {
       .values({ telegramUserId: user.id, title: "New chat" })
       .returning();
     res.status(201).json(chat);
+    return;
+  }
+
+  if (req.method === "PATCH") {
+    const rawIds = Array.isArray(req.body?.chatIds)
+      ? req.body.chatIds
+      : req.body?.chatId != null
+      ? [req.body.chatId]
+      : [];
+    const chatIds = rawIds.map(Number).filter(Number.isInteger);
+    const pinned = !!req.body?.pinned;
+    if (chatIds.length === 0) {
+      res.status(400).json({ error: "chatId or chatIds is required" });
+      return;
+    }
+
+    const updated = await db
+      .update(chats)
+      .set({ pinnedAt: pinned ? new Date() : null })
+      .where(and(eq(chats.telegramUserId, user.id), inArray(chats.id, chatIds)))
+      .returning({ id: chats.id });
+
+    res.status(200).json({ updated: updated.map((c) => c.id), pinned });
     return;
   }
 

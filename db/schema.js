@@ -24,6 +24,10 @@ export const chats = pgTable(
     // the most recent one.
     lastSearchContext: text("last_search_context"),
     lastSearchAt: timestamp("last_search_at"),
+    // Null = not pinned. Non-null doubles as both "is this pinned" and the
+    // sort key — pinned chats sort to the top, most-recently-pinned first
+    // (see the ORDER BY in api/miniapp/chats.js).
+    pinnedAt: timestamp("pinned_at"),
   },
   (table) => ({
     userIdx: index("chats_telegram_user_id_idx").on(table.telegramUserId),
