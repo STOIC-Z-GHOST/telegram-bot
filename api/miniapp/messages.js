@@ -3,7 +3,7 @@
 // GET  ?chatId=123 -> full message history for that chat
 // POST { chatId, content, attachments? } -> saves the user's message
 //        (attachments is an array of { url, name, type, bytes } — up to 5
-//        images together, or a single PDF/.docx/.txt, uploaded first via
+//        images together, or a single PDF/.docx/.xlsx/.pptx/text file, uploaded first via
 //        blob-upload.js), gets an AI reply, saves and returns it
 //
 // Three optional one-shot flags on the POST body, all text-only (ignored
@@ -66,6 +66,7 @@ import {
   recordImageUsage,
   checkImageCountLimit,
   checkChatAttachmentLimit,
+  checkFileTypeAllowed,
   checkThinkingLimit,
   recordThinkingUsage,
   checkSearchLimit,
@@ -234,6 +235,16 @@ export default async function handler(req, res) {
         const countCheck = await checkImageCountLimit(user.id, attachments.length);
         if (!countCheck.allowed) {
           res.status(429).json({ error: "rate_limited", message: countCheck.reason });
+          return;
+        }
+      }
+      // Which plan may attach which file type (Excel/PowerPoint/code-and-data
+      // files are Pro+) — the real gate; the picker's warning is only a
+      // courtesy and can be bypassed.
+      for (const a of attachments) {
+        const typeCheck = await checkFileTypeAllowed(user.id, a.name, a.type);
+        if (!typeCheck.allowed) {
+          res.status(429).json({ error: "rate_limited", message: typeCheck.reason });
           return;
         }
       }

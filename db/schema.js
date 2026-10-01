@@ -114,7 +114,7 @@ export const usageEvents = pgTable(
   {
     id: serial("id").primaryKey(),
     telegramUserId: bigint("telegram_user_id", { mode: "number" }).notNull(),
-    kind: text("kind").notNull(), // "message" | "file" | "image"
+    kind: text("kind").notNull(), // "message" | "file" | "image" | "voice" (plus thinking/search/grounding_fallback — see lib/limits.js)
     tokens: integer("tokens"),
     bytes: integer("bytes"),
     createdAt: timestamp("created_at").notNull().defaultNow(),

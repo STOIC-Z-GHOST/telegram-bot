@@ -4,10 +4,12 @@
   "private": true,
   "type": "module",
   "dependencies": {
-    "mammoth": "^1.12.1",
-    "drizzle-orm": "^0.45.2",
     "@neondatabase/serverless": "^1.1.0",
     "@vercel/blob": "^2.8.0",
-    "jimp": "0.22.12"
+    "drizzle-orm": "^0.45.2",
+    "exceljs": "^4.4.0",
+    "jimp": "0.22.12",
+    "jszip": "^3.10.2",
+    "mammoth": "^1.12.1"
   }
 }

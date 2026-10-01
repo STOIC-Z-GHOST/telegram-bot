@@ -24,11 +24,33 @@ import { isApproved, isOwner } from "../../lib/access.js";
 import { getUserTier } from "../../lib/subscriptions.js";
 import { TIER_LIMITS } from "../../lib/limits.js";
 
-const ALLOWED_CONTENT_TYPES = [
+// Coarse first gate only — the authoritative per-plan check is by file
+// extension in messages.js (checkFileTypeAllowed), because browsers report
+// unreliable MIME types for exactly the formats that matter here. This just
+// keeps a free user's upload from ever landing in our Blob store for types
+// they can't use.
+const FREE_CONTENT_TYPES = [
   "image/*",
   "application/pdf",
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
   "text/plain",
+  "text/markdown",
+  "text/csv",
+  "application/csv",
+  "application/vnd.ms-excel", // Windows often labels a plain .csv this way
+  "application/octet-stream", // fallback label for .md/.csv on some platforms
+];
+const PRO_CONTENT_TYPES = [
+  ...FREE_CONTENT_TYPES,
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  "text/*",
+  "application/json",
+  "application/xml",
+  "application/javascript",
+  "application/x-yaml",
+  "application/x-sh",
+  "application/sql",
 ];
 
 // Vercel Blob's handleUpload wants a Web-standard Request, but this
@@ -58,7 +80,7 @@ export default async function handler(req, res) {
         const tier = await getUserTier(user.id);
         const maxBytes = isOwner(user.id) ? 500 * 1024 * 1024 : TIER_LIMITS[tier].maxFileBytes;
         return {
-          allowedContentTypes: ALLOWED_CONTENT_TYPES,
+          allowedContentTypes: isOwner(user.id) || tier !== "free" ? PRO_CONTENT_TYPES : FREE_CONTENT_TYPES,
           maximumSizeInBytes: maxBytes,
           tokenPayload: JSON.stringify({ telegramUserId: user.id }),
         };

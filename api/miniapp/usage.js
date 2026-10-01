@@ -7,7 +7,8 @@
 import { requireTelegramUser } from "../../lib/telegramAuth.js";
 import { isOwner } from "../../lib/access.js";
 import { getUserTier } from "../../lib/subscriptions.js";
-import { getUsageSummary, TIER_LIMITS, limitsFor } from "../../lib/limits.js";
+import { getUsageSummary, TIER_LIMITS, limitsFor, countVoiceLast24h } from "../../lib/limits.js";
+import { PRO_ONLY_EXTS } from "../../lib/fileTypes.js";
 import { getCreditedReferralCount, getNextMilestone, referralCodeFor, inviteLinkFor } from "../../lib/referrals.js";
 
 export default async function handler(req, res) {
@@ -25,6 +26,9 @@ export default async function handler(req, res) {
     res.status(200).json({
       isOwner: true,
       maxImagesPerMessage: TIER_LIMITS.premium.maxImagesPerMessage,
+      proFileExts: PRO_ONLY_EXTS,
+      canUseProFiles: true,
+      voice: { perDay: null, used: 0, maxSeconds: TIER_LIMITS.premium.maxVoiceSeconds }, // null = unlimited
       // Shown so the owner can test/demo the referral flow too — it just
       // never affects the owner's own limits, since those are already
       // unrestricted regardless of what this counts.
@@ -40,7 +44,10 @@ export default async function handler(req, res) {
 
   const tier = await getUserTier(user.id);
   const limits = await limitsFor(user.id); // referral-bonus-aware for free tier
-  const { messagesLastHour, messagesLast24h, totalTokens, imagesLast30Days } = await getUsageSummary(user.id);
+  const [{ messagesLastHour, messagesLast24h, totalTokens, imagesLast30Days }, voiceUsed] = await Promise.all([
+    getUsageSummary(user.id),
+    countVoiceLast24h(user.id),
+  ]);
 
   const body = {
     isOwner: false,
@@ -54,6 +61,11 @@ export default async function handler(req, res) {
     imagesLast30Days,
     imageGenPerMonth: limits.imageGenPerMonth,
     maxImagesPerMessage: limits.maxImagesPerMessage,
+    // Lets the picker warn a free user about Pro-only file types before they
+    // upload, and the 🎤 button check the quota before recording.
+    proFileExts: PRO_ONLY_EXTS,
+    canUseProFiles: tier !== "free",
+    voice: { perDay: limits.voicePerDay, used: voiceUsed, maxSeconds: limits.maxVoiceSeconds },
   };
 
   if (tier === "free") {

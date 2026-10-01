@@ -57,7 +57,6 @@
 //   drizzle-orm           query builder for the shared Postgres access list
 //   @neondatabase/serverless   Neon's HTTP driver
 
-import mammoth from "mammoth";
 import { fetchWithTimeout } from "../lib/fetchWithTimeout.js";
 import { resizeImageIfNeeded } from "../lib/imageResize.js";
 import {
@@ -71,8 +70,12 @@ import {
   removeUser,
   listApprovedUsers,
 } from "../lib/access.js";
-import { checkMessageLimit, recordMessageUsage, checkImageGenLimit, recordImageUsage, checkThinkingLimit, recordThinkingUsage, TIER_LIMITS, limitsFor } from "../lib/limits.js";
-import { getUserTier, activateSubscription, getTierPrices, setTierPrice, MAX_PRICE_STARS, SUBSCRIPTION_PERIOD_SECONDS } from "../lib/subscriptions.js";
+import { checkMessageLimit, recordMessageUsage, checkImageGenLimit, recordImageUsage, checkThinkingLimit, recordThinkingUsage, TIER_LIMITS, limitsFor, checkFileTypeAllowed, checkVoiceLimit, recordVoiceUsage } from "../lib/limits.js";
+import { classifyFile, ALL_FILES_SUMMARY } from "../lib/fileTypes.js";
+import { extractDocumentText, buildDocumentPrompt } from "../lib/attachments.js";
+import { transcribeAudio } from "../lib/transcribe.js";
+import { ocrToText, buildOcrPrompt } from "../lib/ocr.js";
+import { getUserTier, activateSubscription, getTierPrices, setTierPrice, isDowngrade, MAX_PRICE_STARS, SUBSCRIPTION_PERIOD_SECONDS } from "../lib/subscriptions.js";
 import {
   referralCodeFor,
   inviteLinkFor,
@@ -142,9 +145,14 @@ const SYSTEM_PROMPT =
   "(or used /think). Plain text only, no markdown headers " +
   "(Telegram doesn't render them well) — use line breaks and dashes for " +
   "structure instead. If asked who you are, what model you are, or who made you: " +
-  "you're this bot's own AI assistant, running on Groq and Google Gemini — never " +
-  "claim to be ChatGPT, GPT-4, or any other OpenAI product, and don't cite a " +
-  "training cutoff date as if you were one of those products. " +
+  "you're this bot's own AI assistant. Say honestly that it runs on a mix of AI " +
+  "models behind the scenes and that you can't see which one is answering a given " +
+  "message — never name specific providers or models, never say how many there " +
+  "are, never claim which AI makes the images, never claim to be ChatGPT, GPT-4, " +
+  "or any other OpenAI product, and don't cite a training cutoff date as if you " +
+  "were one of those products. If the person keeps pressing (\"only 2?\", \"which " +
+  "ones?\"), answer in fresh words that you don't know — don't repeat your earlier " +
+  "sentence. " +
   "If asked what commands or features this bot has: the complete, real list is " +
   "/start, /think <question> (slower, more thorough answer), " +
   "/image <description> or /img <description> (AI image generation), /invite " +
@@ -304,6 +312,19 @@ async function getVisionReply(prompt, base64Image, mimeType) {
     return await askGeminiVision(prompt, base64Image, mimeType);
   } catch (err) {
     console.error("Gemini vision/document failed:", err.message);
+    // A PDF Gemini couldn't read: try Mistral OCR (no-op without
+    // MISTRAL_API_KEY), then answer from the extracted text. See lib/ocr.js.
+    if (mimeType === "application/pdf") {
+      try {
+        const ocr = await ocrToText(base64Image, "application/pdf");
+        if (ocr) {
+          const { text: answer } = await getAiReply(buildOcrPrompt(prompt, ocr));
+          return answer;
+        }
+      } catch (ocrErr) {
+        console.error("Mistral OCR fallback failed:", ocrErr.message);
+      }
+    }
     return `⚠️ Couldn't read that file right now: ${err.message}`;
   }
 }
@@ -364,13 +385,15 @@ async function sendStartMessage(chatId) {
   const body = {
     chat_id: chatId,
     text:
-      "I'm online — fast chat via Groq (Gemini backup), /image <description> for pictures, " +
-      "send me a photo any time and I'll analyze it, and send me a PDF, .docx, or text " +
-      "file and I'll read it too. Try /think <question> for a slower, more thorough answer " +
+      "I'm online — ask me anything, use /image <description> for pictures, " +
+      "send me a photo and I'll analyze it, or send a voice note and I'll answer it. " +
+      "I can read PDFs, Word and text files too (Excel, PowerPoint and code files on Pro). " +
+      "Try /think <question> for a slower, more thorough answer " +
       "when you need it. Send /upgrade any time to see your current plan and raise your limits, " +
       "/invite to earn more free usage by inviting friends, or /channelbonus for extra image " +
       "generations by joining the channel." +
       (MINI_APP_URL ? " There's also a proper chat app now, with saved history." : "") +
+      "\n\n⚠️ This bot is AI and can make mistakes. Please double-check cited sources." +
       `\n\n${PRODUCT_CREDIT}`,
   };
   if (MINI_APP_URL) {
@@ -495,6 +518,11 @@ async function handleCallbackQuery(cq) {
       await answerCallbackQuery(cq.id, "Unknown plan.");
       return;
     }
+    const currentTier = await getUserTier(fromId);
+    if (currentTier === "owner" || isDowngrade(currentTier, tier)) {
+      await answerCallbackQuery(cq.id, currentTier === "owner" ? "You're the owner — no limits to raise." : `You're already on a higher plan (${currentTier}).`);
+      return;
+    }
     await answerCallbackQuery(cq.id);
     await sendStarsInvoice(chatId, tier, price);
     return;
@@ -532,9 +560,11 @@ async function buildPlanComparisonText() {
     row("Files", fmtMB(free.maxFileBytes), fmtMB(pro.maxFileBytes), fmtMB(premium.maxFileBytes)),
     row("Imgs/msg", free.maxImagesPerMessage, pro.maxImagesPerMessage, premium.maxImagesPerMessage),
     row("Images/mo", free.imageGenPerMonth, pro.imageGenPerMonth, "Unlimited"),
+    row("Voice/day", free.voicePerDay, pro.voicePerDay, premium.voicePerDay),
+    row("Xlsx/pptx", "—", "✓", "✓"),
   ];
 
-  return `<pre>${lines.join("\n")}</pre>\n\n📎 Multi-image messages (Imgs/msg) are a mini app feature — the DM bot still takes one photo per message.\n\n🔗 Free tier numbers above don't include your own /invite bonus.\n\n🎬 Video generation — 🚧 under production, coming to paid plans once there are real subscribers.`;
+  return `<pre>${lines.join("\n")}</pre>\n\n🎤 Voice messages are up to ${free.maxVoiceSeconds}s (Free) / ${pro.maxVoiceSeconds}s (Pro) / ${premium.maxVoiceSeconds}s (Premium) each. Excel, PowerPoint and code/data files (Xlsx/pptx) are Pro and Premium only.\n\n📎 Multi-image messages (Imgs/msg) are a mini app feature — the DM bot still takes one photo per message.\n\n🔗 Free tier numbers above don't include your own /invite bonus.\n\n🎬 Video generation — 🚧 under production, coming to paid plans once there are real subscribers.`;
 }
 
 // A Stars invoice with subscription_period set bills every 30 days
@@ -943,55 +973,89 @@ export default async function handler(req, res) {
         const { base64 } = await fetchAsBase64(fileUrl);
         const answer = await getVisionReply(question, base64, "application/pdf");
         await sendTelegramMessage(chatId, answer);
-      } else if (
-        mimeType ===
-          "application/vnd.openxmlformats-officedocument.wordprocessingml.document" ||
-        lowerName.endsWith(".docx")
-      ) {
-        // Gemini's inline_data doesn't accept .docx directly, so pull the
-        // text out first with mammoth and send it as a normal text prompt.
-        const resp = await fetchWithTimeout(fileUrl, {}, 12000);
-        const arrayBuffer = await resp.arrayBuffer();
-        const { value: docText } = await mammoth.extractRawText({
-          buffer: Buffer.from(arrayBuffer),
-        });
-        if (!docText.trim()) {
-          await sendTelegramMessage(chatId, "⚠️ Couldn't find any text in that .docx file.");
+      } else if (classifyFile(fileName, mimeType) && classifyFile(fileName, mimeType).kind !== "image") {
+        // Word, Excel, PowerPoint and text/code/data files — all read by
+        // pulling the text out first (Gemini's inline_data only takes PDFs
+        // and images), then answering like a normal text message. Which
+        // plan may send which type is decided in lib/fileTypes.js.
+        const cls = classifyFile(fileName, mimeType);
+        const typeCheck = await checkFileTypeAllowed(chatId, fileName, mimeType);
+        if (!typeCheck.allowed) {
+          await sendTelegramMessage(chatId, typeCheck.reason);
         } else {
-          const limitCheck = await checkMessageLimit(chatId);
-          if (!limitCheck.allowed) {
-            await sendTelegramMessage(chatId, limitCheck.reason);
+          const resp = await fetchWithTimeout(fileUrl, {}, 15000);
+          const buffer = Buffer.from(await resp.arrayBuffer());
+          const extracted = await extractDocumentText(buffer, cls.kind, fileName);
+          if (extracted.error) {
+            await sendTelegramMessage(chatId, extracted.error);
           } else {
-            const prompt = `${question}\n\n--- Document text ---\n${docText.slice(0, 30000)}`;
-            const { text: answer, tokensUsed } = await getAiReply(prompt);
-            const tier = await getUserTier(chatId);
-            // Neither of these needs the other's result — running them
-            // concurrently instead of sequentially shaves a round trip.
-            await Promise.all([recordMessageUsage(chatId, tokensUsed), sendTelegramMessage(chatId, maybeAddFooter(answer, tier))]);
+            const limitCheck = await checkMessageLimit(chatId);
+            if (!limitCheck.allowed) {
+              await sendTelegramMessage(chatId, limitCheck.reason);
+            } else {
+              const prompt = buildDocumentPrompt(question, extracted.text, extracted.truncated);
+              const { text: answer, tokensUsed } = await getAiReply(prompt);
+              const tier = await getUserTier(chatId);
+              // Neither of these needs the other's result — running them
+              // concurrently instead of sequentially shaves a round trip.
+              await Promise.all([recordMessageUsage(chatId, tokensUsed), sendTelegramMessage(chatId, maybeAddFooter(answer, tier))]);
+            }
           }
         }
-      } else if (mimeType.startsWith("text/") || lowerName.endsWith(".txt")) {
-        const resp = await fetchWithTimeout(fileUrl, {}, 12000);
-        const docText = await resp.text();
-        const limitCheck = await checkMessageLimit(chatId);
-        if (!limitCheck.allowed) {
-          await sendTelegramMessage(chatId, limitCheck.reason);
-        } else {
-          const prompt = `${question}\n\n--- Document text ---\n${docText.slice(0, 30000)}`;
-          const { text: answer, tokensUsed } = await getAiReply(prompt);
-          const tier = await getUserTier(chatId);
-          await Promise.all([recordMessageUsage(chatId, tokensUsed), sendTelegramMessage(chatId, maybeAddFooter(answer, tier))]);
-        }
       } else {
-        // Old .doc, .pptx, .xlsx, etc. — not wired up yet.
         await sendTelegramMessage(
           chatId,
-          `⚠️ I can only read PDF, .docx, and plain text files right now — "${fileName}" isn't one of those.`
+          `⚠️ I can read ${ALL_FILES_SUMMARY} — "${fileName}" isn't one of those.`
         );
       }
     } catch (err) {
       console.error("Document pipeline failed:", err.message);
       await sendTelegramMessage(chatId, `⚠️ Couldn't process that file: ${err.message}`);
+    }
+    res.status(200).send("OK");
+    return;
+  }
+
+  // Voice note -> transcribe it, show the user what was heard, then answer it
+  // exactly like a typed message. (Audio FILES — music, podcasts — arrive as
+  // message.audio, not message.voice, and are deliberately ignored.)
+  if (message.voice) {
+    const voice = message.voice;
+    // Check both budgets up front so nobody spends a transcription on a
+    // question they're then not allowed to have answered.
+    const voiceCheck = await checkVoiceLimit(chatId, voice.duration);
+    if (!voiceCheck.allowed) {
+      await sendTelegramMessage(chatId, voiceCheck.reason);
+      res.status(200).send("OK");
+      return;
+    }
+    const msgCheck = await checkMessageLimit(chatId);
+    if (!msgCheck.allowed) {
+      await sendTelegramMessage(chatId, msgCheck.reason);
+      res.status(200).send("OK");
+      return;
+    }
+
+    try {
+      sendTypingAction(chatId); // fire-and-forget — already swallows its own errors
+      const fileUrl = await getTelegramFileUrl(voice.file_id);
+      const resp = await fetchWithTimeout(fileUrl, {}, 12000);
+      if (!resp.ok) throw new Error(`Failed to download voice note: ${resp.status}`);
+      const audio = Buffer.from(await resp.arrayBuffer());
+      const { text: transcript } = await transcribeAudio(audio, voice.mime_type || "audio/ogg");
+      await recordVoiceUsage(chatId, audio.length); // spent even if nothing was heard
+      if (!transcript) {
+        await sendTelegramMessage(chatId, "🎤 I couldn't make out anything in that voice note — try again a bit closer to the mic, or type it.");
+      } else {
+        await sendTelegramMessage(chatId, `🎤 ${transcript}`);
+        sendTypingAction(chatId);
+        const { text: reply, tokensUsed } = await getAiReply(transcript);
+        const tier = await getUserTier(chatId);
+        await Promise.all([recordMessageUsage(chatId, tokensUsed), sendTelegramMessage(chatId, maybeAddFooter(reply, tier))]);
+      }
+    } catch (err) {
+      console.error("Voice pipeline failed:", err.message);
+      await sendTelegramMessage(chatId, "⚠️ Couldn't transcribe that voice note right now — please type it instead.");
     }
     res.status(200).send("OK");
     return;

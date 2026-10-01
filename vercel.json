@@ -8,6 +8,9 @@
     },
     "api/miniapp/messages.js": {
       "maxDuration": 60
+    },
+    "api/miniapp/transcribe.js": {
+      "maxDuration": 30
     }
   }
 }

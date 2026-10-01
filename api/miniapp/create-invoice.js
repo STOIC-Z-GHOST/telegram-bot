@@ -10,7 +10,7 @@
 
 import { requireTelegramUser } from "../../lib/telegramAuth.js";
 import { fetchWithTimeout } from "../../lib/fetchWithTimeout.js";
-import { getTierPrices, SUBSCRIPTION_PERIOD_SECONDS } from "../../lib/subscriptions.js";
+import { getTierPrices, getUserTier, isDowngrade, SUBSCRIPTION_PERIOD_SECONDS } from "../../lib/subscriptions.js";
 
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 
@@ -28,6 +28,14 @@ export default async function handler(req, res) {
   const price = prices[tier];
   if (!price) {
     res.status(400).json({ error: "Unknown plan" });
+    return;
+  }
+
+  // Never sell someone a plan below the one they already have (the UI hides
+  // those buttons — this is the real check).
+  const currentTier = await getUserTier(user.id);
+  if (currentTier === "owner" || isDowngrade(currentTier, tier)) {
+    res.status(400).json({ error: currentTier === "owner" ? "You're the owner — no limits to raise." : `You're already on a higher plan (${currentTier}).` });
     return;
   }
 
