@@ -1842,6 +1842,8 @@
       const plans = await apiFetch("/api/miniapp/plans");
       const { free, pro, premium } = plans.limits;
       const mb = (bytes) => `${Math.floor(bytes / (1024 * 1024))}MB`;
+      // "3 clips · 1.5 min" — total audio per day matters more than per-clip length.
+      const voiceMinutes = (t) => `${t.voicePerDay} clips · ${Math.round((t.voiceSecondsPerDay / 60) * 10) / 10} min`;
       const tok = (n) => (n >= 1000000 ? `${n / 1000000}M` : `${n / 1000}K`);
       planDetailsTableEl.innerHTML = `
         <table class="plan-table">
@@ -1852,7 +1854,7 @@
           <tr><td>Files</td><td>${mb(free.maxFileBytes)}</td><td>${mb(pro.maxFileBytes)}</td><td>${mb(premium.maxFileBytes)}</td></tr>
           <tr><td>Imgs/msg</td><td>${free.maxImagesPerMessage}</td><td>${pro.maxImagesPerMessage}</td><td>${premium.maxImagesPerMessage}</td></tr>
           <tr><td>Images/mo</td><td>${free.imageGenPerMonth}</td><td>${pro.imageGenPerMonth}</td><td>Unlimited</td></tr>
-          <tr><td>Voice/day</td><td>${free.voicePerDay}×${free.maxVoiceSeconds}s</td><td>${pro.voicePerDay}×${pro.maxVoiceSeconds}s</td><td>${premium.voicePerDay}×${premium.maxVoiceSeconds}s</td></tr>
+          <tr><td>Voice/day</td><td>${voiceMinutes(free)}</td><td>${voiceMinutes(pro)}</td><td>${voiceMinutes(premium)}</td></tr>
           <tr><td>Excel/PPT/code</td><td>—</td><td>✓</td><td>✓</td></tr>
         </table>
         <div class="plan-table-note">🎬 Video generation — 🚧 under production, coming to paid plans once there are real subscribers.</div>`;

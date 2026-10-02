@@ -39,14 +39,6 @@ export default async function handler(req, res) {
     return;
   }
 
-  const clipSeconds = Math.max(0, Math.ceil(Number(seconds) || 0));
-
-  const limitCheck = await checkVoiceLimit(user.id, clipSeconds);
-  if (!limitCheck.allowed) {
-    res.status(429).json({ error: "rate_limited", message: limitCheck.reason });
-    return;
-  }
-
   const buffer = Buffer.from(audio, "base64");
   const maxSeconds = isOwner(user.id) ? TIER_LIMITS.premium.maxVoiceSeconds : (await limitsFor(user.id)).maxVoiceSeconds;
   const byteCap = Math.min(MAX_VOICE_BYTES, maxSeconds * MAX_BYTES_PER_SECOND);
@@ -58,10 +50,24 @@ export default async function handler(req, res) {
     return;
   }
 
+  // The client says how long it recorded, but we don't take its word for it:
+  // the clip counts as at least what its size implies at the ceiling bitrate,
+  // so under-reporting can't smuggle a long recording past the seconds budget.
+  const clipSeconds = Math.max(
+    Math.max(0, Math.ceil(Number(seconds) || 0)),
+    Math.ceil(buffer.length / MAX_BYTES_PER_SECOND)
+  );
+
+  const limitCheck = await checkVoiceLimit(user.id, clipSeconds);
+  if (!limitCheck.allowed) {
+    res.status(429).json({ error: "rate_limited", message: limitCheck.reason });
+    return;
+  }
+
   try {
     const { text } = await transcribeAudio(buffer, mimeType);
     // Count it even when nothing was heard — the provider call was still spent.
-    await recordVoiceUsage(user.id, buffer.length);
+    await recordVoiceUsage(user.id, buffer.length, clipSeconds);
     if (!text) {
       res.status(200).json({ text: "", message: "Couldn't hear anything — try again a bit closer to the mic." });
       return;

@@ -56,6 +56,7 @@ CREATE TABLE IF NOT EXISTS usage_events (
   kind TEXT NOT NULL,
   tokens INTEGER,
   bytes INTEGER,
+  seconds INTEGER,
   created_at TIMESTAMP NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS usage_events_user_time_idx ON usage_events(telegram_user_id, created_at);

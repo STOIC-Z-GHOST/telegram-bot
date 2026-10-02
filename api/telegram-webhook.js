@@ -560,11 +560,11 @@ async function buildPlanComparisonText() {
     row("Files", fmtMB(free.maxFileBytes), fmtMB(pro.maxFileBytes), fmtMB(premium.maxFileBytes)),
     row("Imgs/msg", free.maxImagesPerMessage, pro.maxImagesPerMessage, premium.maxImagesPerMessage),
     row("Images/mo", free.imageGenPerMonth, pro.imageGenPerMonth, "Unlimited"),
-    row("Voice/day", free.voicePerDay, pro.voicePerDay, premium.voicePerDay),
+    row("Voice/day", `${free.voicePerDay}/${free.voiceSecondsPerDay / 60}m`, `${pro.voicePerDay}/${pro.voiceSecondsPerDay / 60}m`, `${premium.voicePerDay}/${premium.voiceSecondsPerDay / 60}m`),
     row("Xlsx/pptx", "—", "✓", "✓"),
   ];
 
-  return `<pre>${lines.join("\n")}</pre>\n\n🎤 Voice messages are up to ${free.maxVoiceSeconds}s (Free) / ${pro.maxVoiceSeconds}s (Pro) / ${premium.maxVoiceSeconds}s (Premium) each. Excel, PowerPoint and code/data files (Xlsx/pptx) are Pro and Premium only.\n\n📎 Multi-image messages (Imgs/msg) are a mini app feature — the DM bot still takes one photo per message.\n\n🔗 Free tier numbers above don't include your own /invite bonus.\n\n🎬 Video generation — 🚧 under production, coming to paid plans once there are real subscribers.`;
+  return `<pre>${lines.join("\n")}</pre>\n\n🎤 Voice/day shows clips / total minutes of audio. Each voice message can be up to ${free.maxVoiceSeconds}s (Free) / ${pro.maxVoiceSeconds}s (Pro) / ${premium.maxVoiceSeconds}s (Premium). Excel, PowerPoint and code/data files (Xlsx/pptx) are Pro and Premium only.\n\n📎 Multi-image messages (Imgs/msg) are a mini app feature — the DM bot still takes one photo per message.\n\n🔗 Free tier numbers above don't include your own /invite bonus.\n\n🎬 Video generation — 🚧 under production, coming to paid plans once there are real subscribers.`;
 }
 
 // A Stars invoice with subscription_period set bills every 30 days
@@ -1043,7 +1043,7 @@ export default async function handler(req, res) {
       if (!resp.ok) throw new Error(`Failed to download voice note: ${resp.status}`);
       const audio = Buffer.from(await resp.arrayBuffer());
       const { text: transcript } = await transcribeAudio(audio, voice.mime_type || "audio/ogg");
-      await recordVoiceUsage(chatId, audio.length); // spent even if nothing was heard
+      await recordVoiceUsage(chatId, audio.length, voice.duration); // spent even if nothing was heard
       if (!transcript) {
         await sendTelegramMessage(chatId, "🎤 I couldn't make out anything in that voice note — try again a bit closer to the mic, or type it.");
       } else {

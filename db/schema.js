@@ -117,6 +117,7 @@ export const usageEvents = pgTable(
     kind: text("kind").notNull(), // "message" | "file" | "image" | "voice" (plus thinking/search/grounding_fallback — see lib/limits.js)
     tokens: integer("tokens"),
     bytes: integer("bytes"),
+    seconds: integer("seconds"), // voice only: billed audio seconds (see lib/limits.js)
     createdAt: timestamp("created_at").notNull().defaultNow(),
   },
   (table) => ({
