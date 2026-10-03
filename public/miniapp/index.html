@@ -144,9 +144,10 @@
     flex-direction: column;
     transform: translateX(100%);
     transition: transform 0.28s cubic-bezier(0.32, 0.72, 0, 1);
-    box-shadow: -8px 0 24px rgba(0, 0, 0, 0.15);
   }
-  .menu-drawer.open { transform: translateX(0); }
+  /* The shadow only exists while open — a closed drawer sits just off-screen
+     and its shadow used to bleed in as a grey stripe down the screen edge. */
+  .menu-drawer.open { transform: translateX(0); box-shadow: -8px 0 24px rgba(0, 0, 0, 0.15); }
 
   /* --- Chat-history drawer (mirrors the menu drawer above, but slides
      in from the left instead of the right, and gets its own overlay so
@@ -172,9 +173,8 @@
     flex-direction: column;
     transform: translateX(-100%);
     transition: transform 0.28s cubic-bezier(0.32, 0.72, 0, 1);
-    box-shadow: 8px 0 24px rgba(0, 0, 0, 0.15);
   }
-  .chat-drawer.open { transform: translateX(0); }
+  .chat-drawer.open { transform: translateX(0); box-shadow: 8px 0 24px rgba(0, 0, 0, 0.15); }
 
   /* --- Model-quality bottom sheet ---
      Deliberately spacious: full-width cards with real line-height and
@@ -201,9 +201,8 @@
     padding: 10px 18px max(22px, env(safe-area-inset-bottom));
     transform: translateY(100%);
     transition: transform 0.28s cubic-bezier(0.32, 0.72, 0, 1);
-    box-shadow: 0 -8px 24px rgba(0, 0, 0, 0.15);
   }
-  .tier-sheet.open { transform: translateY(0); }
+  .tier-sheet.open { transform: translateY(0); box-shadow: 0 -8px 24px rgba(0, 0, 0, 0.15); }
   .tier-sheet-handle {
     width: 36px;
     height: 4px;
@@ -668,11 +667,6 @@
     gap: 8px;
     flex-shrink: 0;
   }
-  #attach-btn {
-    font-size: 20px;
-    padding: 6px 4px;
-    flex-shrink: 0;
-  }
   .ai-disclaimer {
     text-align: center;
     font-size: 11px;
@@ -696,6 +690,215 @@
     white-space: nowrap;
   }
   #voice-btn:disabled { opacity: 0.5; }
+  /* ===== Chat view look (matches the approved mockup) =====
+     Scoped to #view-chat so the list/settings/search screens are
+     untouched. Colours are rgba overlays on the Telegram theme's own
+     background rather than fixed greys, so dark themes keep working. */
+  #view-chat {
+    --accent: #1a85f5;
+    --soft: rgba(91, 110, 140, 0.08);
+    --soft-border: rgba(91, 110, 140, 0.16);
+    --meta: #8593a8;
+    background-color: var(--bg);
+    background-image: linear-gradient(rgba(26, 133, 245, 0.025), rgba(26, 133, 245, 0.025));
+  }
+  #view-chat .topbar {
+    gap: 4px;
+    padding: 10px 14px 10px 8px;
+    padding-top: calc(10px + var(--tg-content-safe-top));
+    background: var(--bg);
+    border-bottom: none;
+    box-shadow: 0 2px 16px rgba(15, 23, 42, 0.07);
+    position: relative;
+    z-index: 2;
+  }
+  #view-chat .topbar .icon-btn {
+    width: 40px;
+    height: 40px;
+    padding: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--accent);
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+  #view-chat .topbar .icon-btn svg { width: 24px; height: 24px; display: block; }
+  .topbar-titles { flex: 1; min-width: 0; padding-left: 2px; }
+  #view-chat .topbar h1 {
+    font-size: 19px;
+    font-weight: 700;
+    line-height: 1.2;
+    letter-spacing: -0.01em;
+  }
+  .topbar-subtitle { font-size: 13.5px; line-height: 1.3; color: var(--meta); margin-top: 1px; }
+
+  #view-chat .messages { padding: 18px 16px 12px; gap: 6px; }
+  #view-chat .bubble { max-width: 84%; font-size: 16px; line-height: 1.4; border-radius: 20px; }
+  #view-chat .bubble.user {
+    background: none;
+    color: inherit;
+    padding: 0;
+    border-radius: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    margin-bottom: 14px;
+  }
+  #view-chat .bubble-body {
+    background: var(--accent);
+    color: #fff;
+    padding: 10px 20px;
+    border-radius: 22px;
+    max-width: 100%;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+  }
+  #view-chat .bubble.assistant {
+    background: var(--soft);
+    color: var(--text);
+    padding: 13px 18px 10px;
+    margin-bottom: 8px;
+  }
+  /* Time + ticks sit under the blue pill; time + copy sit inside the grey one. */
+  #view-chat .bubble-meta,
+  #view-chat .bubble-footer {
+    white-space: normal;
+    font-size: 13px;
+    color: var(--meta);
+  }
+  #view-chat .bubble-meta { display: flex; align-items: center; gap: 5px; margin-top: 5px; }
+  #view-chat .bubble-ticks { display: none; width: 18px; height: 18px; color: var(--accent); }
+  #view-chat .bubble.user.delivered .bubble-ticks { display: block; }
+  #view-chat .bubble-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 28px;
+    margin-top: 8px;
+  }
+  #view-chat .bubble-footer .bubble-copy-btn { margin: 0; padding: 2px; opacity: 0.8; color: var(--meta); }
+  #view-chat .bubble-footer .bubble-copy-btn svg { width: 18px; height: 18px; }
+
+  #view-chat .composer {
+    gap: 10px;
+    padding: 12px 14px;
+    padding-bottom: max(10px, env(safe-area-inset-bottom));
+    border-top: none;
+    box-shadow: 0 -10px 24px -14px rgba(15, 23, 42, 0.12);
+  }
+  #view-chat .composer-input-row { gap: 10px; }
+  .composer-plus-btn {
+    width: 44px;
+    height: 44px;
+    flex-shrink: 0;
+    padding: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    border: none;
+    box-shadow: inset 0 0 0 1px var(--soft-border);
+    background: var(--soft);
+    color: var(--text);
+    opacity: 0.75;
+    cursor: pointer;
+  }
+  .composer-plus-btn svg { width: 22px; height: 22px; }
+  .composer-plus-btn:disabled { opacity: 0.4; }
+  /* A box-shadow ring instead of a border: the autosize script sets the
+     textarea's height to its scrollHeight, which doesn't include borders. */
+  #view-chat #input {
+    min-height: 44px;
+    padding: 11px 18px;
+    border: none;
+    border-radius: 22px;
+    box-shadow: inset 0 0 0 1px var(--soft-border);
+    background: var(--soft);
+    font-size: 16px;
+    line-height: 22px;
+  }
+  #view-chat .send-btn {
+    width: 44px;
+    height: 44px;
+    padding: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--accent);
+    color: #fff;
+  }
+  #view-chat .send-btn svg { width: 22px; height: 22px; }
+
+  #view-chat .composer-toolbar {
+    justify-content: space-between;
+    gap: 5px;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  #view-chat .composer-toolbar::-webkit-scrollbar { display: none; }
+  #view-chat .mode-pill {
+    height: 36px;
+    padding: 0 12px;
+    gap: 5px;
+    font-size: 13px;
+    border-color: var(--soft-border);
+    border-radius: 18px;
+    color: var(--text);
+    flex-shrink: 0;
+  }
+  #view-chat .mode-pill:not(.active) { opacity: 0.75; }
+  #view-chat .mode-pill.active { background: var(--accent); border-color: var(--accent); color: #fff; opacity: 1; }
+  .pill-icon { display: inline-flex; align-items: center; font-size: 14px; line-height: 1; }
+  .pill-icon svg { width: 16px; height: 16px; display: block; }
+  .pill-caret { width: 8px; height: 5px; margin-left: 1px; }
+  .toolbar-divider { width: 1px; height: 26px; background: var(--soft-border); flex-shrink: 0; }
+  #view-chat .composer-toolbar .icon-btn {
+    width: 30px;
+    height: 36px;
+    padding: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    color: var(--text);
+    opacity: 0.7;
+  }
+  #view-chat .composer-toolbar .icon-btn svg { width: 22px; height: 22px; display: block; }
+  /* While recording, the pills step aside and the red stop button takes the
+     row — a live "12s / 90s" counter doesn't fit beside six other controls. */
+  #view-chat .composer-toolbar.is-recording .mode-pill,
+  #view-chat .composer-toolbar.is-recording .toolbar-divider { display: none; }
+  #view-chat .composer-toolbar #voice-btn.recording {
+    flex: 1;
+    width: auto;
+    height: 36px;
+    padding: 0 12px;
+    opacity: 1;
+    color: #fff;
+    background: #e53935;
+    border-radius: 18px;
+    font-size: 13px;
+    font-weight: 600;
+    white-space: nowrap;
+  }
+  /* Narrow phones: tighter pills, and below 360px drop the pill emoji too,
+     so all six controls always fit on one row. */
+  @media (max-width: 370px) {
+    #view-chat .composer-toolbar { gap: 4px; }
+    #view-chat .mode-pill { padding: 0 9px; }
+  }
+  @media (max-width: 359px) {
+    #think-toggle-btn .pill-icon,
+    #search-toggle-btn .pill-icon { display: none; }
+  }
+  #view-chat .ai-disclaimer {
+    font-size: clamp(9.5px, 2.7vw, 11px);
+    color: var(--meta);
+    opacity: 0.85;
+    padding: 0;
+  }
+
   .mode-pill {
     display: inline-flex;
     align-items: center;
@@ -1034,28 +1237,28 @@
 
   <div id="view-chat" class="view">
     <header class="topbar">
-      <button id="back-btn" class="icon-btn" aria-label="Back">‹</button>
-      <h1 id="chat-title">Chat</h1>
-      <button id="chat-history-btn" class="icon-btn" aria-label="Chat history">☰</button>
+      <button id="back-btn" class="icon-btn" aria-label="Back"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 5 8 12 15 19"/></svg></button>
+      <div class="topbar-titles">
+        <h1 id="chat-title">Chat</h1>
+        <div class="topbar-subtitle">Chat with AI</div>
+      </div>
+      <button id="chat-history-btn" class="icon-btn" aria-label="Chat history"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="4" y1="7" x2="20" y2="7"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="17" x2="20" y2="17"/></svg></button>
     </header>
     <div id="messages" class="messages"></div>
     <div id="attachment-chips" class="attachment-chips" hidden></div>
     <form id="composer" class="composer">
       <div class="composer-input-row">
         <input type="file" id="file-input" accept="image/*,application/pdf,.docx,.txt,.md,.csv,.xlsx,.pptx,.json,.html,.htm,.xml,.yml,.yaml,.toml,.ini,.log,.sql,.js,.mjs,.ts,.jsx,.tsx,.py,.java,.c,.h,.cpp,.cs,.go,.rs,.php,.rb,.sh,.css" multiple hidden />
-        <textarea id="input" placeholder="Message" rows="1"></textarea>
-        <button id="send-btn" class="send-btn" type="submit" aria-label="Send">➤</button>
+        <button type="button" id="attach-btn" class="composer-plus-btn" aria-label="Add files or photos"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg></button>
+        <textarea id="input" placeholder="Type a message…" rows="1"></textarea>
+        <button id="send-btn" class="send-btn" type="submit" aria-label="Send"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M9.78 18.65l.28-4.23 7.68-6.92c.34-.31-.07-.46-.52-.19L7.74 13.3 3.64 12c-.88-.25-.89-.86.2-1.3l15.97-6.16c.73-.33 1.43.18 1.15 1.3l-2.72 12.81c-.19.91-.74 1.13-1.5.71L12.6 16.3l-1.99 1.93c-.23.23-.42.42-.83.42z"/></svg></button>
       </div>
       <div class="composer-toolbar">
-        <div class="composer-toolbar-left">
-          <button type="button" id="think-toggle-btn" class="mode-pill" aria-label="Think mode">🧠 Think</button>
-          <button type="button" id="search-toggle-btn" class="mode-pill" aria-label="Search mode">🔍 Search</button>
-        </div>
-        <div class="composer-toolbar-right">
-          <button type="button" id="tier-select-btn" class="mode-pill" aria-label="Model quality">💬 Standard ▾</button>
-          <button type="button" id="voice-btn" class="icon-btn" aria-label="Voice input">🎤</button>
-          <button type="button" id="attach-btn" class="icon-btn" aria-label="Attach file">📎</button>
-        </div>
+        <button type="button" id="think-toggle-btn" class="mode-pill" aria-label="Think mode"><span class="pill-icon">🧠</span>Think</button>
+        <button type="button" id="search-toggle-btn" class="mode-pill" aria-label="Search mode"><span class="pill-icon">🔍</span>Search</button>
+        <button type="button" id="tier-select-btn" class="mode-pill" aria-label="Model quality"><span class="pill-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="12" r="9.5"/><circle cx="8" cy="12" r="1.1" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.1" fill="currentColor" stroke="none"/><circle cx="16" cy="12" r="1.1" fill="currentColor" stroke="none"/></svg></span>Standard<svg class="pill-caret" viewBox="0 0 10 6" aria-hidden="true"><path d="M0 0h10L5 6z" fill="currentColor"/></svg></button>
+        <span class="toolbar-divider" aria-hidden="true"></span>
+        <button type="button" id="voice-btn" class="icon-btn" aria-label="Voice input"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="3" width="6" height="11" rx="3" fill="currentColor"/><path d="M5 11a7 7 0 0 0 14 0"/><line x1="12" y1="18" x2="12" y2="21"/></svg></button>
       </div>
       <div class="ai-disclaimer">This bot is AI and can make mistakes. Please double-check cited sources.</div>
     </form>
@@ -1497,6 +1700,12 @@
     tierSheetEl.classList.remove("open");
     setTimeout(() => { tierSheetOverlay.hidden = true; }, 250);
   }
+  const STANDARD_PILL_ICON = tierSelectBtn.querySelector(".pill-icon").innerHTML;
+  const PILL_CARET = tierSelectBtn.querySelector(".pill-caret").outerHTML;
+  function setTierPill(tier) {
+    const icon = tier.id === "standard" ? STANDARD_PILL_ICON : tier.icon;
+    tierSelectBtn.innerHTML = `<span class="pill-icon">${icon}</span>${tier.name}${PILL_CARET}`;
+  }
   tierSelectBtn.addEventListener("click", openTierSheet);
   tierSheetOverlay.addEventListener("click", closeTierSheet);
   tierSheetListEl.addEventListener("click", (e) => {
@@ -1512,7 +1721,7 @@
       return;
     }
     selectedTier = tier.id;
-    tierSelectBtn.textContent = `${tier.icon} ${tier.name} ▾`;
+    setTierPill(tier);
     tg?.HapticFeedback?.selectionChanged?.();
     closeTierSheet();
   });
@@ -2180,9 +2389,31 @@
       `<div class="auth-error">Couldn't load your chats — open this from the bot inside Telegram.<br><br>(${message})</div>`;
   }
 
-  function renderBubble(role, content, attachments) {
+  const DOUBLE_CHECK_ICON =
+    '<svg class="bubble-ticks" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M1.5 13l4.5 4.5L15 8"/><path d="M9.5 16.5l1 1L21 7"/></svg>';
+
+  function formatMessageTime(value) {
+    const d = value ? new Date(value) : new Date();
+    if (Number.isNaN(d.getTime())) return "";
+    return d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  }
+
+  // opts.createdAt: when the message was sent (defaults to now).
+  // opts.delivered: show the double tick under a user message — only set
+  // once the server has actually accepted it (see the submit handler).
+  function renderBubble(role, content, attachments, opts = {}) {
     const el = document.createElement("div");
     el.className = `bubble ${role}`;
+    // A user bubble is a transparent wrapper: the blue pill is .bubble-body,
+    // with the time/ticks underneath it, outside the pill. An assistant
+    // bubble is the grey pill itself, with its footer inside.
+    let body = el;
+    if (role === "user") {
+      body = document.createElement("div");
+      body.className = "bubble-body";
+      el.appendChild(body);
+      if (opts.delivered) el.classList.add("delivered");
+    }
 
     const list = Array.isArray(attachments) ? attachments : attachments ? [attachments] : [];
     const images = list.filter((a) => a.type && a.type.startsWith("image/") && a.url);
@@ -2193,7 +2424,7 @@
       img.className = "bubble-attachment-image";
       img.src = images[0].url;
       img.alt = images[0].name || "";
-      el.appendChild(img);
+      body.appendChild(img);
     } else if (images.length > 1) {
       const grid = document.createElement("div");
       grid.className = "bubble-attachment-grid";
@@ -2203,7 +2434,7 @@
         img.alt = a.name || "";
         grid.appendChild(img);
       }
-      el.appendChild(grid);
+      body.appendChild(grid);
     }
 
     // Non-image files, and images still mid-upload (no URL yet) — shown as
@@ -2213,14 +2444,31 @@
       const chip = document.createElement("div");
       chip.className = "bubble-attachment-file";
       chip.textContent = `📎 ${a.name || "file"}`;
-      el.appendChild(chip);
+      body.appendChild(chip);
     }
 
     if (content) {
       const textEl = document.createElement("div");
       textEl.textContent = content;
-      el.appendChild(textEl);
-      el.appendChild(renderCopyButton(content));
+      body.appendChild(textEl);
+    }
+
+    if (role === "user") {
+      const meta = document.createElement("div");
+      meta.className = "bubble-meta";
+      const time = document.createElement("span");
+      time.textContent = formatMessageTime(opts.createdAt);
+      meta.appendChild(time);
+      meta.insertAdjacentHTML("beforeend", DOUBLE_CHECK_ICON);
+      el.appendChild(meta);
+    } else if (role === "assistant") {
+      const footer = document.createElement("div");
+      footer.className = "bubble-footer";
+      const time = document.createElement("span");
+      time.textContent = formatMessageTime(opts.createdAt);
+      footer.appendChild(time);
+      if (content) footer.appendChild(renderCopyButton(content));
+      el.appendChild(footer);
     }
 
     messagesEl.appendChild(el);
@@ -2318,7 +2566,7 @@
         const attachments = m.attachments || (m.attachmentUrl
           ? [{ url: m.attachmentUrl, name: m.attachmentName, type: m.attachmentType }]
           : null);
-        renderBubble(m.role, m.content, attachments);
+        renderBubble(m.role, m.content, attachments, { createdAt: m.createdAt, delivered: true });
       }
       scrollMessagesToBottom();
     } catch (err) {
@@ -2425,6 +2673,7 @@
   // and drops the transcript into the message box for the user to check and
   // send — nothing is sent to the chat automatically.
   const voiceBtn = document.getElementById("voice-btn");
+  const MIC_ICON = voiceBtn.innerHTML; // restored after recording/transcribing swaps in text
   let mediaRecorder = null;
   let recordStream = null;
   let recordedChunks = [];
@@ -2457,7 +2706,7 @@
 
   function updateRecordingLabel() {
     const secs = Math.floor((Date.now() - recordStartedAt) / 1000);
-    voiceBtn.textContent = `⏹ ${secs}s / ${voiceInfo.maxSeconds}s`;
+    voiceBtn.textContent = `⏹ Stop · ${secs}s / ${voiceInfo.maxSeconds}s`;
   }
 
   function stopRecording() {
@@ -2490,6 +2739,7 @@
     mediaRecorder.start();
     recordStartedAt = Date.now();
     voiceBtn.classList.add("recording");
+    voiceBtn.parentElement.classList.add("is-recording");
     updateRecordingLabel();
     recordTimer = setInterval(() => {
       updateRecordingLabel();
@@ -2503,7 +2753,8 @@
     recordStream?.getTracks().forEach((t) => t.stop()); // release the mic right away
     recordStream = null;
     voiceBtn.classList.remove("recording");
-    voiceBtn.textContent = "🎤";
+    voiceBtn.parentElement.classList.remove("is-recording");
+    voiceBtn.innerHTML = MIC_ICON;
     const seconds = (Date.now() - recordStartedAt) / 1000;
     const type = mediaRecorder?.mimeType || "audio/webm";
     const blob = new Blob(recordedChunks, { type });
@@ -2532,7 +2783,7 @@
     } finally {
       voiceBusy = false;
       voiceBtn.disabled = false;
-      voiceBtn.textContent = "🎤";
+      voiceBtn.innerHTML = MIC_ICON;
     }
   }
 
@@ -2597,7 +2848,7 @@
     inputEl.focus({ preventScroll: true }); // re-assert focus immediately, same tick as the tap/Enter that triggered this
 
     const bubbleAttachments = files.map((f) => ({ name: f.name, type: f.type }));
-    renderBubble("user", text, bubbleAttachments);
+    const userBubbleEl = renderBubble("user", text, bubbleAttachments);
     const typingEl = renderTypingBubble();
     scrollMessagesToBottom();
 
@@ -2634,6 +2885,7 @@
         body: JSON.stringify({ chatId: activeChatId, content: text, attachments: uploadedAttachments, thinking: useThinking, search: useSearch, tier: selectedTier }),
       });
       typingEl.remove();
+      userBubbleEl.classList.add("delivered"); // the server accepted it — show the ticks
       renderBubble("assistant", reply.content, reply.attachments || null);
     } catch (err) {
       typingEl.remove();
