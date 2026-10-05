@@ -69,6 +69,8 @@ import {
   checkFileTypeAllowed,
   checkThinkingLimit,
   recordThinkingUsage,
+  checkExtraLimit,
+  recordExtraUsage,
   checkSearchLimit,
   recordSearchUsage,
 } from "../../lib/limits.js";
@@ -289,6 +291,8 @@ export default async function handler(req, res) {
     }
 
     let rawReply, tokensUsed;
+    let tierNote = null; // one-line explanation appended to the reply when Extra had to run on Max instead
+    let extraUsedGemini = false;
     let searchCacheFields = {}; // merged into the end-of-request chat UPDATE below, only ever set on a successful live search
 
     if (hasAttachment) {
@@ -308,7 +312,17 @@ export default async function handler(req, res) {
       const memoryOn = await isMemoryEnabled(user.id);
       const savedMemories = memoryOn ? (await listMemories(user.id)).map((m) => m.content) : [];
       const memoryOptions = { savedMemories, allowMemorySave: memoryOn };
-      const modelTier = await resolveModelTier(requestedTier, user.id);
+      let modelTier = await resolveModelTier(requestedTier, user.id);
+      // Extra runs on a shared free Gemini quota, so it has its own daily
+      // budgets (see checkExtraLimit in lib/limits.js). Over budget isn't an
+      // error — the reply just runs on Max instead, and says so.
+      if (modelTier === "extra") {
+        const extraCheck = await checkExtraLimit(user.id);
+        if (!extraCheck.allowed) {
+          modelTier = "max";
+          tierNote = extraCheck.reason;
+        }
+      }
 
       // Search mode: try to get web results (or, as a last resort, a
       // fully-written grounded answer) BEFORE asking Groq/Gemini for the
@@ -345,6 +359,9 @@ export default async function handler(req, res) {
       }
       rawReply = result.text;
       tokensUsed = result.tokensUsed;
+      // Count Extra only when a Gemini model really answered — a fallback to
+      // Max's model spent none of the shared Gemini quota.
+      extraUsedGemini = modelTier === "extra" && typeof result.servedBy === "string" && result.servedBy.startsWith("gemini");
 
       // Only overwrites the cache on an actual successful search — a
       // failed/empty one (condenseSearchOutcomeForCache returns null) or a
@@ -358,6 +375,7 @@ export default async function handler(req, res) {
     }
     await recordMessageUsage(user.id, tokensUsed);
     if (wantsThinking) await recordThinkingUsage(user.id);
+    if (extraUsedGemini) await recordExtraUsage(user.id);
     if (wantsSearch) await recordSearchUsage(user.id);
 
     // Natural-language image request, detected by the model itself rather
@@ -381,6 +399,7 @@ export default async function handler(req, res) {
     // analyzeAttachments doesn't pass allowMemorySave — so savedFact is
     // always null on that path.)
     let { visibleReply, savedFact } = extractMemoryMarker(rawReply);
+    if (tierNote) visibleReply += `\n\n(${tierNote})`;
     if (savedFact) {
       const result = await saveMemory(user.id, savedFact);
       if (!result.saved && result.reason === "limit") {
