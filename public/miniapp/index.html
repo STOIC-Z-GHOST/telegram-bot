@@ -1464,7 +1464,7 @@
     { id: "flash", icon: "⚡", name: "Flash", desc: "Fastest replies, lighter model — great for quick, simple questions.", minPlan: "free" },
     { id: "standard", icon: "💬", name: "Standard", desc: "Balanced quality and speed — the default for everyday chat.", minPlan: "free" },
     { id: "max", icon: "🚀", name: "Max", desc: "A stronger model for harder questions and more detailed answers.", minPlan: "pro" },
-    { id: "extra", icon: "💎", name: "Extra", desc: "Our most capable models, for the hardest questions. Limited replies per day.", minPlan: "premium" },
+    { id: "extra", icon: "💎", name: "Extra", desc: "Our most capable models, for the hardest questions. A few replies a day. Coming soon for Extra: voice replies and live translation.", minPlan: "premium" },
   ];
   const TIER_PLAN_RANK = { free: 0, pro: 1, premium: 2, owner: 3 };
   // Standalone web-search tab
@@ -2066,6 +2066,7 @@
           <tr><td>Voice/day</td><td>${voiceMinutes(free)}</td><td>${voiceMinutes(pro)}</td><td>${voiceMinutes(premium)}</td></tr>
           <tr><td>Excel/PPT/code</td><td>—</td><td>✓</td><td>✓</td></tr>
           <tr><td>Extra model/day</td><td>—</td><td>—</td><td>${premium.extraPerDay}</td></tr>
+          <tr><td>Extra bonuses</td><td>—</td><td>—</td><td>Soon</td></tr>
         </table>
         <div class="plan-table-note">🎬 Video generation — 🚧 under production, coming to paid plans once there are real subscribers.</div>`;
       planDetailsTableEl.hidden = false;

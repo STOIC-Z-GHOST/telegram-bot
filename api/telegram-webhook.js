@@ -113,6 +113,10 @@ const MINI_APP_URL = process.env.MINI_APP_URL
 
 // Model IDs current as of Aug 2026 — swap if your account has different access.
 const GEMINI_MODEL = "gemini-3.6-flash";
+// Roomier second Gemini model: on this project's free tier GEMINI_MODEL allows
+// only 20 requests/day (all users combined) while this one allows 500 — see
+// GEMINI_FALLBACK_MODEL in lib/ai.js. Used when the first one's quota is spent.
+const GEMINI_FALLBACK_MODEL = "gemini-3.5-flash-lite";
 const GROQ_MODEL = "openai/gpt-oss-120b"; // Groq's current flagship open model (text only)
 
 const PRODUCT_CREDIT = "🤖 @assist_ai — try it free.";
@@ -162,8 +166,17 @@ const SYSTEM_PROMPT =
   "— if asked about a feature that isn't on this list, say plainly that this " +
   "bot doesn't have it rather than making up syntax for it.";
 
-async function askGemini(prompt, { thinking = false } = {}) {
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`;
+async function askGemini(prompt, opts = {}) {
+  try {
+    return await askGeminiModel(prompt, GEMINI_MODEL, opts);
+  } catch (err) {
+    console.warn(`Gemini (${GEMINI_MODEL}) failed, trying ${GEMINI_FALLBACK_MODEL}:`, err.message);
+    return await askGeminiModel(prompt, GEMINI_FALLBACK_MODEL, { ...opts, timeoutMs: 15000 });
+  }
+}
+
+async function askGeminiModel(prompt, model, { thinking = false, timeoutMs } = {}) {
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}`;
   const body = {
     system_instruction: { parts: [{ text: SYSTEM_PROMPT }] },
     contents: [{ parts: [{ text: prompt }] }],
@@ -178,8 +191,8 @@ async function askGemini(prompt, { thinking = false } = {}) {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
-  }, thinking ? 45000 : 20000); // a real reasoning pass takes longer than a normal reply
-  if (!resp.ok) throw new Error(`Gemini error ${resp.status}: ${await resp.text()}`);
+  }, timeoutMs ?? (thinking ? 45000 : 20000)); // a real reasoning pass takes longer than a normal reply
+  if (!resp.ok) throw new Error(`Gemini (${model}) error ${resp.status}: ${await resp.text()}`);
   const data = await resp.json();
   const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
   if (!text) throw new Error("Gemini returned no text");
@@ -191,7 +204,21 @@ async function askGemini(prompt, { thinking = false } = {}) {
 // natively handles text+image together in one request, no separate
 // "vision model" needed.
 async function askGeminiVision(prompt, base64Image, mimeType) {
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`;
+  const startedAt = Date.now();
+  try {
+    return await askGeminiVisionModel(prompt, base64Image, mimeType, GEMINI_MODEL, 35000);
+  } catch (err) {
+    console.warn(`Gemini vision (${GEMINI_MODEL}) failed:`, err.message);
+    // Usually a spent daily quota, which fails in about a second. If the first
+    // attempt was slow, skip: 35s + another attempt + the file download
+    // wouldn't fit in the function's 60s.
+    if (Date.now() - startedAt >= 10000) throw err;
+    return await askGeminiVisionModel(prompt, base64Image, mimeType, GEMINI_FALLBACK_MODEL, 22000);
+  }
+}
+
+async function askGeminiVisionModel(prompt, base64Image, mimeType, model, timeoutMs) {
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}`;
   const resp = await fetchWithTimeout(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -206,8 +233,8 @@ async function askGeminiVision(prompt, base64Image, mimeType) {
         },
       ],
     }),
-  }, 35000); // the real bottleneck for a complex image/PDF — rebalanced (was 30000, capped too tight against the 60s ceiling once file download time is added in)
-  if (!resp.ok) throw new Error(`Gemini vision error ${resp.status}: ${await resp.text()}`);
+  }, timeoutMs); // the real bottleneck for a complex image/PDF — rebalanced (was 30000, capped too tight against the 60s ceiling once file download time is added in)
+  if (!resp.ok) throw new Error(`Gemini vision (${model}) error ${resp.status}: ${await resp.text()}`);
   const data = await resp.json();
   const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
   if (!text) throw new Error("Gemini vision returned no text");

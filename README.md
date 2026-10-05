@@ -81,9 +81,19 @@ analyze it (see below).
   package (Gemini's document understanding doesn't accept `.docx` directly
   the way it does PDFs and images), then sent as a normal text prompt.
 - **`.txt`** files are read directly as plain text.
-- Old-format `.doc`, `.pptx`, `.xlsx`, and other file types aren't wired up
-  yet — the bot will tell you it can't read them rather than failing
-  silently.
+- **`.xlsx`, `.pptx`, `.md`, `.csv`, code and data files** (`.json`, `.py`,
+  `.js`, `.sql`, `.log`, …) are read too — Excel and PowerPoint text is
+  extracted in-process (`exceljs`, `jszip`), no external API or key. Which
+  plan may send which type is one list in `lib/fileTypes.js`: Free gets
+  images, PDF, Word and text/Markdown/CSV; Excel, PowerPoint and the code/data
+  types are Pro and Premium. Office files are size-checked from the zip's
+  table of contents before parsing so a tiny "zip bomb" can't exhaust memory.
+- Old-format `.doc`, videos, archives and other types aren't supported — the
+  bot says so rather than failing silently.
+- If Gemini can't read a PDF (usually its small free daily quota running out),
+  **Mistral OCR** (`lib/ocr.js`, uses your existing `MISTRAL_API_KEY`) turns
+  it into text and a normal text model answers from that. It only runs as that
+  safety net, so cost stays small.
 - Telegram bots can only download files up to 20MB — anything bigger gets
   a clear "too big" message instead of a failed/hanging request.
 - Uses `getAiReply` (Gemini → Groq fallback) for `.docx`/`.txt`, and the
@@ -266,6 +276,86 @@ invocations. A free external store like Upstash Redis, or your existing
 EcoFurnish database if you ever merge this bot into that project, would
 both work.
 
+## Voice input
+
+Speak instead of type. In the mini app the 🎤 button records a short clip and
+puts the transcript in the message box for you to check and send; in the DM
+bot a voice note is transcribed, shown back as "🎤 …", and answered like a
+typed message. Transcription is **Groq Whisper** (`whisper-large-v3-turbo`, your
+existing `GROQ_API_KEY`) with a Gemini audio fallback (`lib/transcribe.js`).
+
+Groq's free plan is shared by everyone using the bot and limits audio *seconds*
+as well as requests (about 28,800 audio-seconds and 2,000 requests a day), so
+voice is budgeted three ways in `lib/limits.js`: clips per day, seconds of
+audio per day, and the maximum length of one clip, per plan (Free 3 clips /
+1.5 min, Pro 30 / 20 min, Premium 100 / 60 min), plus site-wide ceilings at
+about 60% of Groq's limits. **Run `db/migrate_voice_seconds_v14.sql` once on
+Neon before deploying** — it adds the `seconds` column those budgets use.
+
+## Model tiers (mini app)
+
+The pill under the message box picks the model for the next replies:
+
+| Tier | Model | Who |
+|---|---|---|
+| ⚡ Flash | Llama 3.1 8B on Groq — fastest | Everyone |
+| Standard | `gpt-oss-120b` on Groq, then the fallback chain | Everyone |
+| Max | Mistral Large | Pro and Premium |
+| 💎 Extra | Gemini 3.8 → 3.7 → 3.5 → 3 Flash, then Max's model | Premium |
+
+Every tier falls back to the Standard chain on failure, so the worst case is
+"you got Standard's answer", never "you got nothing".
+
+**Extra and Google's free tier.** Google's free tier gives each Gemini model
+its own small quota. On this project every Flash model is 5 requests/minute and
+20 requests/day for *all users together*; Gemini 2.5 Pro and 3.1 Pro show 0
+(not available on the free tier). Extra therefore chains four Flash models —
+separate quotas, about 80 replies a day in total — instead of relying on one.
+It is protected by a per-user cap (10/day) and a site-wide cap
+(`EXTRA_SITE_DAILY_CAP`, default 60); hitting either never errors — the reply
+runs on Max and says so. Your real numbers are on
+`aistudio.google.com/usage?timeRange=last-28-days&tab=rate-limit`, and the
+free tier lets Google use submitted content to improve its products.
+
+Vision, PDFs, voice-note fallback and the last-resort text fallback use
+`gemini-3.6-flash` first (20/day) and then `gemini-3.5-flash-lite`
+(500/day) so they don't stop after 20 uses.
+
+## Roadmap: Extra bonus add-ons (not built yet)
+
+Ideas to make Extra different from the other tiers. **None of these exist yet
+— build them once there are real users to justify them.** All three use
+Google's Gemini Live API, which the free tier shows with unlimited requests
+per day (the limit is tokens per minute — 65K for 3.8 Live, 20K for the
+translate/transcribe models — plus a small number of simultaneous connections,
+roughly 3–5). Google hasn't published rate limits specific to the Live models
+and free-tier content may be used to improve its products, so re-check the
+AI Studio rate-limit page before building. Live models are voice agents: they
+take text, audio, images or video in and answer with *audio* (text only as a
+transcript of that audio), over a WebSocket — so they are **not** a good
+replacement for the text chat models above.
+
+1. **Voice replies ("talk to the bot").** Send a voice note, get a spoken
+   answer back. Uses `gemini-3.8-live` (or its "Extended Thinking" sibling
+   for harder questions). Work involved: open a WebSocket per
+   exchange from the function, collect the audio, and convert it to a format
+   Telegram plays as a voice note (the model returns raw PCM, and Vercel has
+   no ffmpeg — use a WASM Opus encoder or send WAV), and give it its own daily
+   cap so one user can't use up the shared connection/token allowance.
+2. **Live translation.** Speak in one language, hear/read another, using the
+   `Gemini 3.5 Live Translate` model. Same plumbing as #1 with a translation
+   config.
+3. **Priority voice-to-text.** `Gemini 3.5 Transcribe Live` as a second
+   transcription path next to Groq Whisper (`lib/transcribe.js`), so Extra
+   users never hit the Whisper site-wide ceilings. (On the free tier the
+   non-live `Gemini 3.5 Transcribe` shows only 3 requests/min and 25/day; the
+   Live version shows unlimited requests, limited by tokens per minute.)
+
+Until these exist, the mini app labels them "coming soon" on the Extra card
+and in the plan table — remove that wording from `public/miniapp/index.html`
+(search for "Coming soon for Extra" and "Extra bonuses") if you decide not to
+build them. Don't sell Premium on features that aren't live yet.
+
 ## Access control
 
 The bot is public — anyone can message it and land on the Free tier
@@ -303,6 +393,8 @@ owner, are exempt from all of it:
 | Image generations | 3 / 30 days | 10 / 30 days | 1000 / 30 days (shown to users as "Unlimited") |
 | `/think` uses | 3 / day | 15 / day | 40 / day |
 | 🔍 Search uses | 5 / day | 40 / day | 200 / day |
+| 🎤 Voice | 3 clips · 1.5 min / day | 30 clips · 20 min / day | 100 clips · 60 min / day |
+| 💎 Extra model replies | — | — | 10 / day |
 | Video generation | 🚧 under production — see note below | | |
 
 Free's numbers above are the *base* tier — a given free user's actual
@@ -441,7 +533,7 @@ detect that they left.
 - **Product branding.** The `/start` reply signs off with `@assist_ai`
   instead of a personal name — see `PRODUCT_CREDIT` in
   `api/telegram-webhook.js` if you want to change it.
-- **Model IDs** (`gemini-3.6-flash`, `openai/gpt-oss-120b`) are current as of Aug 2026.
+- **Model IDs** (`gemini-3.6-flash`, `gemini-3.5-flash-lite`, the Extra list in `lib/ai.js`, `openai/gpt-oss-120b`) are current as of Oct 2026.
   If either provider retires a model later, just change the constant near
   the top of `api/telegram-webhook.js`.
 - **No domain needed.** The free `your-project.vercel.app` address is a full
