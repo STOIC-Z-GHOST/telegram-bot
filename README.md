@@ -351,10 +351,11 @@ replacement for the text chat models above.
    non-live `Gemini 3.5 Transcribe` shows only 3 requests/min and 25/day; the
    Live version shows unlimited requests, limited by tokens per minute.)
 
-Until these exist, the mini app labels them "coming soon" on the Extra card
-and in the plan table — remove that wording from `public/miniapp/index.html`
-(search for "Coming soon for Extra" and "Extra bonuses") if you decide not to
-build them. Don't sell Premium on features that aren't live yet.
+Until these exist, the mini app only says "New features coming soon" on the
+Extra card and in the plan table — deliberately vague so it builds anticipation
+without promising specific features. Remove that wording from
+`public/miniapp/index.html` (search for "New features") if you decide not to
+build any of them. Don't sell Premium on features that aren't live yet.
 
 ## Access control
 
@@ -378,6 +379,76 @@ one access list, not two that could drift out of sync. The table name and
 status lifecycle (`approved` / `denied`) are left over from when this was
 an invite-only bot with manual review; `denied` now just means "banned."
 
+## Provider chains and shared budgets
+
+Two providers give you a shared *budget* rather than a per-model request count,
+so each has a site-wide guard (`lib/providerBudget.js`, no migration needed):
+
+| Provider | Free allowance | Guard stops at | Env var to change it |
+|---|---|---|---|
+| Cloudflare Workers AI | 10,000 neurons per UTC day, all models and users | 9,000 | `CF_NEURON_DAILY_CAP` |
+| Mistral | $10/month API credit, shared with OCR | $8.50 | `MISTRAL_MONTHLY_BUDGET_USD` |
+
+Both fail open (if the budget check itself errors the call is allowed) and a
+429/403/404 from any provider just moves on to the next in the chain.
+Cloudflare resets at 00:00 UTC; the Mistral guard counts the UTC calendar
+month, so if your credit cycle starts on another day, lower the budget for the
+month you're in. Confirm which Mistral plan you're on in the console's
+Billing/Usage page (a dollar credit balance means the $10 rule applies).
+
+Chains (first available wins, then the next):
+
+- **Standard:** Groq gpt-oss-120b -> Cerebras (if keyed) -> Cloudflare gpt-oss-120b -> OpenRouter -> Ministral 14B -> Mistral Small -> Gemini
+- **Flash:** Groq llama-3.1-8b -> Cloudflare llama-3.1-8b -> Ministral 8B -> Standard chain
+- **Max:** Mistral Large 3 (pinned `mistral-large-2512`) -> Standard chain
+- **Extra:** four Gemini Flash models -> Max -> Standard chain
+- **Think mode** skips Cloudflare (reasoning tokens bill as output and drain the shared pool)
+- **Image questions:** Gemini -> Gemini Flash-Lite -> Cloudflare Gemma 4 -> OpenRouter Qwen-VL -> ModelScope -> Z.ai (Pixtral was retired by Mistral and removed)
+
+Cloudflare needs **both** `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN`
+(a token with Workers AI permission); with either missing it is skipped.
+Model ids are env vars because both vendors retire models:
+`CF_STANDARD_MODEL`, `CF_FLASH_MODEL`, `CF_VISION_MODEL`,
+`MISTRAL_SMALL_MODEL`, `MISTRAL_LARGE_MODEL`, `MISTRAL_14B_MODEL`,
+`MISTRAL_8B_MODEL`. Ids are pinned instead of `-latest` because an alias can
+resolve to a model with a much lower rate limit.
+
+After deploying, check Cloudflare once with a real message and look at the
+Vercel logs for "Cloudflare answered"; if the endpoint path is wrong you'll see
+a 404 there and the chain will quietly skip it.
+
+## Trials and the Plan sheet
+
+Open the menu (☰) and tap **Plan**, right below Settings. It shows the current
+plan with a countdown, the free trials the person can start, and the Stars
+subscribe buttons. **Run `db/migrate_plan_trials_v15.sql` once on Neon BEFORE
+deploying** — starting a trial writes to the new `plan_trials` table.
+
+| | Pro promo | Premium trial |
+|---|---|---|
+| Length | 14 days | 3 days |
+| Who | the first 100 *activations* (`PRO_PROMO_SLOTS`) | once per account |
+| Max-model replies | 2 / day | 5 / day |
+| Extra-model replies | — | 3 / day |
+| Tokens | free allowance + 300K | free allowance + 150K |
+| Other caps | 5 thinking, 5 searches, 10 voice clips, 5 images/mo | 10, 10, 20, 10 |
+
+- **The clock starts when the user taps Start**, not at signup, so a trial never
+  ends before they knew it was on. Remaining days are not banked.
+- A trial is an ordinary `subscriptions` row (charge id `trial:<kind>`), so it
+  unlocks that plan's tiers and file types everywhere. A real Stars payment
+  overwrites it (the leftover trial days are forfeited — the sheet says so).
+- Not allowed while on a paid plan or while another trial is running; each kind
+  once per account (primary key on `plan_trials`).
+- `TRIAL_DAILY_START_CAP` (default 20) limits new trials per rolling 24h across
+  everyone, which bounds what second accounts can cost the shared free quotas.
+- Max-model replies are the costly ones (~$0.0014 each against Mistral's shared
+  $10 credit), so trials cap them per day; over the cap a reply runs on Standard
+  with a one-line note. Paid Pro/Premium have no per-user cap.
+- A banner reminder appears once per visit when 2 days or fewer remain.
+- Numbers live in `TRIAL_KINDS` in `lib/limits.js`; the Plan sheet reads them
+  from the server, so changing them there changes what users see.
+
 ## Plans and limits
 
 Three tiers, checked against real usage (see `lib/limits.js`) — you, as
@@ -386,7 +457,7 @@ owner, are exempt from all of it:
 | | Free | Pro (300 ⭐/mo) | Premium (600 ⭐/mo) |
 |---|---|---|---|
 | Messages | 15 / day | 100 / hour | 1000 / hour (shown to users as "Unlimited") |
-| Token allowance | 20,000 lifetime | 1,000,000 lifetime | 10,000,000 lifetime |
+| Token allowance | 300,000 / 30 days | 1,800,000 / 30 days | 4,500,000 / 30 days |
 | File size cap | 5MB | 200MB | 500MB |
 | Images per message | 5 | 10 | 20 |
 | Attachments per chat (lifetime) | 2 | 100 | 100,000 (shown to users as "Unlimited") |
@@ -395,7 +466,8 @@ owner, are exempt from all of it:
 | 🔍 Search uses | 5 / day | 40 / day | 200 / day |
 | 🎤 Voice | 3 clips · 1.5 min / day | 30 clips · 20 min / day | 100 clips · 60 min / day |
 | 💎 Extra model replies | — | — | 10 / day |
-| Video generation | 🚧 under production — see note below | | |
+| Model tiers | Flash, Standard | + Max | + Extra |
+| Video generation | coming soon for paid tiers — see note below | | |
 
 Free's numbers above are the *base* tier — a given free user's actual
 limits are usually higher once their referral bonus is added in (see
@@ -454,7 +526,7 @@ Everything lives in `lib/referrals.js`:
 - Credited referrals unlock a stacking ladder of bonuses on top of the
   base Free limits (`REFERRAL_TIERS`) — more messages/day at 5 and 15
   invites, image generations at 15 and 25, attachments/chat at 25 and
-  100, a lifetime token top-up at 35, and file size at 75. It tops out at
+  100, a token top-up (per 30 days) at 35, and file size at 75. It tops out at
   100 invites, and every number on it is kept well short of Pro on
   purpose — this rewards social free users, it isn't meant to make paying
   pointless.
@@ -493,8 +565,8 @@ image generation (genuinely free via Pollinations, no matter the volume),
 there's no free equivalent for video: every real provider (Kling,
 PixVerse, Google's Veo, etc.) charges per-video or per-month, and OpenAI's
 Sora API is being shut down entirely. Offering it on the Free tier would
-mean you personally eating a real, ongoing cost per user. It's listed in
-the comparison table as "under production" as a placeholder — building it
+mean you personally eating a real, ongoing cost per user. The comparison
+tables only say "coming soon for paid tiers" as a placeholder — building it
 for real is a separate decision once there's actual subscriber demand to
 justify a provider account and a price that covers it.
 

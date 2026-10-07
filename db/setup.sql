@@ -98,3 +98,12 @@ CREATE TABLE IF NOT EXISTS channel_memberships (
   telegram_user_id BIGINT PRIMARY KEY,
   verified_at TIMESTAMP NOT NULL DEFAULT now()
 );
+
+CREATE TABLE IF NOT EXISTS plan_trials (
+  telegram_user_id BIGINT NOT NULL,
+  kind TEXT NOT NULL,
+  started_at TIMESTAMP NOT NULL DEFAULT now(),
+  expires_at TIMESTAMP NOT NULL,
+  PRIMARY KEY (telegram_user_id, kind)
+);
+CREATE INDEX IF NOT EXISTS plan_trials_started_idx ON plan_trials(started_at);

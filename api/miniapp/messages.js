@@ -52,7 +52,7 @@ import { put } from "@vercel/blob";
 import { db } from "../../db/client.js";
 import { chats, messages } from "../../db/schema.js";
 import { requireTelegramUser } from "../../lib/telegramAuth.js";
-import { getConversationReply, MODEL_TIER_MIN_PLAN } from "../../lib/ai.js";
+import { getConversationReply, MODEL_TIER_MIN_PLAN, MAX_MODEL_ID } from "../../lib/ai.js";
 import { searchWeb, condenseSearchOutcomeForCache, SEARCH_CACHE_FRESHNESS_MS } from "../../lib/search.js";
 import { analyzeAttachments } from "../../lib/attachments.js";
 import { generateImage, extractImageGenMarker } from "../../lib/imagegen.js";
@@ -71,6 +71,8 @@ import {
   recordThinkingUsage,
   checkExtraLimit,
   recordExtraUsage,
+  checkMaxLimit,
+  recordMaxUsage,
   checkSearchLimit,
   recordSearchUsage,
 } from "../../lib/limits.js";
@@ -293,6 +295,7 @@ export default async function handler(req, res) {
     let rawReply, tokensUsed;
     let tierNote = null; // one-line explanation appended to the reply when Extra had to run on Max instead
     let extraUsedGemini = false;
+    let maxUsedLarge = false; // a reply served by the costly Max model — counted against a trial's daily cap
     let searchCacheFields = {}; // merged into the end-of-request chat UPDATE below, only ever set on a successful live search
 
     if (hasAttachment) {
@@ -321,6 +324,15 @@ export default async function handler(req, res) {
         if (!extraCheck.allowed) {
           modelTier = "max";
           tierNote = extraCheck.reason;
+        }
+      }
+      // Max is the costly model, so trials have a per-day cap on it (paid plans
+      // don't — see checkMaxLimit). Over the cap the reply runs on Standard.
+      if (modelTier === "max") {
+        const maxCheck = await checkMaxLimit(user.id);
+        if (!maxCheck.allowed) {
+          modelTier = "standard";
+          tierNote = tierNote ? `${tierNote} ${maxCheck.reason}` : maxCheck.reason;
         }
       }
 
@@ -362,6 +374,9 @@ export default async function handler(req, res) {
       // Count Extra only when a Gemini model really answered — a fallback to
       // Max's model spent none of the shared Gemini quota.
       extraUsedGemini = modelTier === "extra" && typeof result.servedBy === "string" && result.servedBy.startsWith("gemini");
+      // Extra can also land on the Max model once its Gemini models are spent, so
+      // count by what actually answered, not by the tier that was requested.
+      maxUsedLarge = result.servedBy === MAX_MODEL_ID;
 
       // Only overwrites the cache on an actual successful search — a
       // failed/empty one (condenseSearchOutcomeForCache returns null) or a
@@ -376,6 +391,7 @@ export default async function handler(req, res) {
     await recordMessageUsage(user.id, tokensUsed);
     if (wantsThinking) await recordThinkingUsage(user.id);
     if (extraUsedGemini) await recordExtraUsage(user.id);
+    if (maxUsedLarge) await recordMaxUsage(user.id);
     if (wantsSearch) await recordSearchUsage(user.id);
 
     // Natural-language image request, detected by the model itself rather

@@ -4,7 +4,7 @@
 // switch between in the mini app; a "message" belongs to exactly one chat
 // and holds either the user's turn or the assistant's reply, in order.
 
-import { pgTable, serial, integer, bigint, text, timestamp, boolean, jsonb, index } from "drizzle-orm/pg-core";
+import { pgTable, serial, integer, bigint, text, timestamp, boolean, jsonb, index, primaryKey } from "drizzle-orm/pg-core";
 
 export const chats = pgTable(
   "chats",
@@ -149,6 +149,25 @@ export const referrals = pgTable(
 // count, specifically so someone can't re-earn the trial every time their
 // rolling count dips below 100 and climbs back over it. See
 // maybeGrantReferralTrial in lib/referrals.js.
+// One row per (user, trial kind) ever started — the primary key is what makes
+// each trial claimable once per account. Also what the first-100 Pro promo
+// counts to know how many spots are left, and what the daily start cap counts.
+// The trial itself lives in `subscriptions` (charge id "trial:<kind>"); this
+// table only records that it happened. See lib/trials.js.
+export const planTrials = pgTable(
+  "plan_trials",
+  {
+    telegramUserId: bigint("telegram_user_id", { mode: "number" }).notNull(),
+    kind: text("kind").notNull(), // "pro_promo" | "premium_trial"
+    startedAt: timestamp("started_at").notNull().defaultNow(),
+    expiresAt: timestamp("expires_at").notNull(),
+  },
+  (table) => ({
+    pk: primaryKey({ columns: [table.telegramUserId, table.kind] }),
+    startedIdx: index("plan_trials_started_idx").on(table.startedAt),
+  })
+);
+
 export const referralTrials = pgTable("referral_trials", {
   telegramUserId: bigint("telegram_user_id", { mode: "number" }).primaryKey(),
   grantedAt: timestamp("granted_at").notNull().defaultNow(),

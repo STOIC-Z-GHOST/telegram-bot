@@ -419,6 +419,36 @@
   }
   .menu-item:active { background: var(--secondary-bg); }
   .menu-item-icon { font-size: 18px; width: 20px; text-align: center; }
+  .menu-item-badge { margin-left: auto; font-size: 12px; color: var(--hint); }
+  /* Plan sheet — reuses the .tier-sheet bottom-sheet shell */
+  .plan-card {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    border: 1.5px solid var(--section-separator);
+    border-radius: 16px;
+    padding: 14px 16px;
+    background: var(--secondary-bg);
+  }
+  .plan-card.current { border-color: var(--button); }
+  .plan-card-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .plan-card-name { font-size: 16px; font-weight: 700; }
+  .plan-card-status { font-size: 12px; color: var(--hint); text-align: right; }
+  .plan-card-desc { font-size: 13px; color: var(--hint); line-height: 1.4; }
+  .plan-card-note { font-size: 12px; color: var(--hint); line-height: 1.4; }
+  .plan-card-btn {
+    width: 100%;
+    border: 1.5px solid var(--section-separator);
+    border-radius: 12px;
+    padding: 11px 14px;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    background: var(--bg);
+    color: var(--text);
+  }
+  .plan-card-btn.primary { background: var(--button); color: var(--button-text); border-color: var(--button); }
+  .plan-card-btn:disabled { opacity: 0.5; cursor: default; }
   .menu-footer { padding: 16px 20px; display: flex; justify-content: center; }
   .credit-box {
     padding: 8px 14px;
@@ -621,6 +651,9 @@
     max-width: 100%;
   }
 
+  .typing-wrap { display: inline-flex; align-items: center; gap: 8px; }
+  .typing-label { font-size: 13px; color: var(--hint); }
+  .typing-label:empty { display: none; }
   .typing-dots { display: inline-flex; gap: 3px; align-items: center; padding: 4px 2px; }
   .typing-dots span {
     width: 6px; height: 6px; border-radius: 50%;
@@ -1372,6 +1405,9 @@
     <button class="menu-item" id="open-settings-btn">
       <span class="menu-item-icon">⚙️</span> Settings
     </button>
+    <button class="menu-item" id="open-plan-btn">
+      <span class="menu-item-icon">⭐</span> Plan <span class="menu-item-badge" id="plan-menu-badge" hidden></span>
+    </button>
   </nav>
   <div class="menu-footer">
     <div class="credit-box">@assist_ai · © 2026</div>
@@ -1396,6 +1432,17 @@
   <h2 class="tier-sheet-title">Model quality</h2>
   <p class="tier-sheet-subtitle">Applies to every message until you change it.</p>
   <div id="tier-sheet-list" class="tier-sheet-list"></div>
+</div>
+
+<!-- Plan sheet: opened from the menu item below Settings. Shows the running
+     plan/trial with its countdown, the free trials the person can start, and
+     the normal Stars subscribe buttons. -->
+<div id="plan-sheet-overlay" class="tier-sheet-overlay" hidden></div>
+<div id="plan-sheet" class="tier-sheet" role="dialog" aria-label="Your plan">
+  <div class="tier-sheet-handle"></div>
+  <h2 class="tier-sheet-title">Your plan</h2>
+  <p class="tier-sheet-subtitle" id="plan-sheet-subtitle"></p>
+  <div id="plan-sheet-list" class="tier-sheet-list"></div>
 </div>
 
 <script type="module">
@@ -1464,7 +1511,7 @@
     { id: "flash", icon: "⚡", name: "Flash", desc: "Fastest replies, lighter model — great for quick, simple questions.", minPlan: "free" },
     { id: "standard", icon: "💬", name: "Standard", desc: "Balanced quality and speed — the default for everyday chat.", minPlan: "free" },
     { id: "max", icon: "🚀", name: "Max", desc: "A stronger model for harder questions and more detailed answers.", minPlan: "pro" },
-    { id: "extra", icon: "💎", name: "Extra", desc: "Our most capable models, for the hardest questions. A few replies a day. Coming soon for Extra: voice replies and live translation.", minPlan: "premium" },
+    { id: "extra", icon: "💎", name: "Extra", desc: "Our most capable models, for the hardest questions. A few replies a day. New features coming soon.", minPlan: "premium" },
   ];
   const TIER_PLAN_RANK = { free: 0, pro: 1, premium: 2, owner: 3 };
   // Standalone web-search tab
@@ -1489,6 +1536,12 @@
   const chatDrawerNewBtn = document.getElementById("chat-drawer-new-btn");
   const settingsBackBtn = document.getElementById("settings-back-btn");
   const openSettingsBtn = document.getElementById("open-settings-btn");
+  const openPlanBtn = document.getElementById("open-plan-btn");
+  const planMenuBadgeEl = document.getElementById("plan-menu-badge");
+  const planSheetOverlay = document.getElementById("plan-sheet-overlay");
+  const planSheetEl = document.getElementById("plan-sheet");
+  const planSheetSubtitleEl = document.getElementById("plan-sheet-subtitle");
+  const planSheetListEl = document.getElementById("plan-sheet-list");
   const themeSegmented = document.getElementById("theme-segmented");
   const memoryToggle = document.getElementById("memory-toggle");
   const memoryListEl = document.getElementById("memory-list");
@@ -1714,16 +1767,147 @@
     const tier = MODEL_TIERS.find((t) => t.id === card.dataset.tier);
     const rank = TIER_PLAN_RANK[currentUserPlan ?? "free"] ?? 0;
     if (rank < TIER_PLAN_RANK[tier.minPlan]) {
-      // Locked — send them straight to the upgrade section instead of
+      // Locked — send them to the Plan sheet (trial / subscribe) instead of
       // just refusing the tap.
       closeTierSheet();
-      openMenu();
+      setTimeout(openPlanSheet, 260);
       return;
     }
     selectedTier = tier.id;
     setTierPill(tier);
     tg?.HapticFeedback?.selectionChanged?.();
     closeTierSheet();
+  });
+
+  // --- Plan sheet (menu item below Settings) ---
+  let trialReminderShown = false; // the "ends soon" notice shows once per visit, not on every refresh
+  const TRIAL_BUTTON_LABEL = {
+    already_used: "Trial already used",
+    slots_full: "All free spots taken",
+    daily_full: "Full today — try tomorrow",
+  };
+  const planLabel = (p) => (p === "premium" ? "Premium" : p === "pro" ? "Pro" : "Free");
+  const daysWord = (n) => `${n} day${n === 1 ? "" : "s"}`;
+  const fmtShortDate = (iso) => new Date(iso).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  const fmtTokenCount = (n) => (n >= 1000000 ? `${n / 1000000}M` : `${Math.round(n / 1000)}K`);
+
+  function trialCapsText(plan, offer, running) {
+    const c = offer.caps;
+    const replies = plan === "premium"
+      ? `${c.maxPerDay} Max + ${c.extraPerDay} Extra replies a day`
+      : `${c.maxPerDay} Max replies a day`;
+    const limits = `${replies} · +${fmtTokenCount(offer.extraTokens)} tokens · ${c.searchPerDay} searches a day`;
+    return running
+      ? `Trial limits: ${limits}.`
+      : `Trial limits: ${limits}. Your ${daysWord(offer.days)} start when you tap the button, not before.`;
+  }
+
+  function renderPlanSheet(plans) {
+    const trial = plans.trial;
+    if (!trial) {
+      planSheetSubtitleEl.textContent = "You're the owner — there are no limits to raise.";
+      planSheetListEl.innerHTML = "";
+      return;
+    }
+    const active = trial.active;
+    const paidPlan = trial.paid ? currentUserPlan : null;
+    const rank = (p) => TIER_PLAN_RANK[p] ?? 0;
+
+    planSheetSubtitleEl.textContent = active
+      ? `${planLabel(active.plan)} trial — ${daysWord(active.daysLeft)} left (ends ${fmtShortDate(active.expiresAt)})`
+      : paidPlan
+        ? `You're on ${planLabel(paidPlan)}.`
+        : "You're on Free.";
+
+    const freeCurrent = !active && !paidPlan;
+    const cards = [`
+      <div class="plan-card${freeCurrent ? " current" : ""}">
+        <div class="plan-card-head"><span class="plan-card-name">Free</span><span class="plan-card-status">${freeCurrent ? "Your plan" : ""}</span></div>
+        <div class="plan-card-desc">Flash and Standard models, with a daily message allowance.</div>
+      </div>`];
+
+    for (const plan of ["pro", "premium"]) {
+      const offer = trial.offers[plan];
+      const isTrialling = active && active.plan === plan;
+      const isPaid = paidPlan === plan;
+      const status = isTrialling ? `Trial · ${daysWord(active.daysLeft)} left` : isPaid ? "Your plan" : "";
+      const desc = plan === "pro"
+        ? "Max model, Excel / PowerPoint / code files, longer voice notes, more images and search."
+        : "Everything in Pro, plus the Extra model and the highest limits.";
+      let body = `<div class="plan-card-desc">${desc}</div>`;
+
+      if (!isPaid) {
+        if (offer.available) {
+          body += `<button type="button" class="plan-card-btn primary" data-action="trial" data-plan="${plan}">Start ${offer.days}-day ${planLabel(plan)} trial</button>`;
+          let note = trialCapsText(plan, offer, false);
+          if (offer.slotsLeft != null) note += ` ${offer.slotsLeft} of ${offer.slotsTotal} free spots left.`;
+          body += `<div class="plan-card-note">${note}</div>`;
+        } else if (isTrialling) {
+          body += `<div class="plan-card-note">${trialCapsText(plan, offer, true)}</div>`;
+        } else if (TRIAL_BUTTON_LABEL[offer.reason]) {
+          body += `<button type="button" class="plan-card-btn" disabled>${TRIAL_BUTTON_LABEL[offer.reason]}</button>`;
+        }
+        // Subscribe is offered for any plan above what they actually pay for.
+        if (rank(plan) > rank(paidPlan ?? "free")) {
+          body += `<button type="button" class="plan-card-btn" data-action="subscribe" data-plan="${plan}">Subscribe — ${plans.prices[plan]} ⭐/month</button>`;
+          if (isTrialling) body += `<div class="plan-card-note">Subscribing starts your paid month right away and replaces the trial.</div>`;
+        }
+      }
+      cards.push(`<div class="plan-card${isTrialling || isPaid ? " current" : ""}"><div class="plan-card-head"><span class="plan-card-name">⭐ ${planLabel(plan)}</span><span class="plan-card-status">${status}</span></div>${body}</div>`);
+    }
+    planSheetListEl.innerHTML = cards.join("");
+  }
+
+  async function refreshPlanSheet() {
+    try {
+      if (currentUserPlan === null) await loadUsage();
+      renderPlanSheet(await apiFetch("/api/miniapp/plans"));
+    } catch (err) {
+      planSheetListEl.textContent = `Couldn't load your plan: ${err.message}`;
+    }
+  }
+  async function openPlanSheet() {
+    planSheetSubtitleEl.textContent = "";
+    planSheetListEl.textContent = "Loading…";
+    planSheetOverlay.hidden = false;
+    requestAnimationFrame(() => {
+      planSheetOverlay.classList.add("visible");
+      planSheetEl.classList.add("open");
+    });
+    await refreshPlanSheet();
+  }
+  function closePlanSheet() {
+    planSheetOverlay.classList.remove("visible");
+    planSheetEl.classList.remove("open");
+    setTimeout(() => { planSheetOverlay.hidden = true; }, 250);
+  }
+  openPlanBtn.addEventListener("click", () => {
+    closeMenu();
+    openPlanSheet();
+  });
+  planSheetOverlay.addEventListener("click", closePlanSheet);
+  planSheetListEl.addEventListener("click", async (e) => {
+    const btn = e.target.closest("button[data-action]");
+    if (!btn || btn.disabled) return;
+    const plan = btn.dataset.plan;
+    if (btn.dataset.action === "subscribe") {
+      closePlanSheet();
+      startUpgrade(plan);
+      return;
+    }
+    if (btn.dataset.action === "trial") {
+      btn.disabled = true;
+      try {
+        const r = await apiFetch("/api/miniapp/plans", { method: "POST", body: JSON.stringify({ action: "start_trial", plan }) });
+        tg?.HapticFeedback?.notificationOccurred?.("success");
+        await loadUsage();
+        await refreshPlanSheet();
+        showNotice(`Your ${planLabel(plan)} trial has started — it ends ${fmtShortDate(r.expiresAt)}.`);
+      } catch (err) {
+        await refreshPlanSheet();
+        showNotice(err.message);
+      }
+    }
   });
 
   // --- Standalone web search tab ---
@@ -1992,20 +2176,40 @@
         // owner can generate/test their own referral link.
         menuUsageEl.hidden = true;
         upgradeSectionEl.hidden = true;
+        openPlanBtn.hidden = true; // no plan to manage for the owner
+        planMenuBadgeEl.hidden = true;
         renderInviteSection(data.referrals);
         return;
       }
+      openPlanBtn.hidden = false;
       menuUsageEl.hidden = false;
       const windowLabel = data.messageWindow === "day" ? "today" : "this hour";
       menuUsageMessagesEl.textContent = `${data.messagesUsed}/${data.messagesLimit} messages ${windowLabel}`;
-      menuUsageTokensEl.textContent = `${data.totalTokens.toLocaleString()}/${data.maxTokens.toLocaleString()} tokens used`;
+      menuUsageTokensEl.textContent = `${data.tokensLast30Days.toLocaleString()}/${data.maxTokens.toLocaleString()} tokens used (30 days)`;
 
       upgradeSectionEl.hidden = false;
       const tierLabel = data.tier.charAt(0).toUpperCase() + data.tier.slice(1);
+      const trialSuffix = data.trial ? ` (trial, ${daysWord(data.trial.daysLeft)} left)` : "";
       currentTierLabelEl.textContent =
-        `Current plan: ${tierLabel} · ${data.imagesLast30Days}/${data.imageGenPerMonth} image generations this month`;
-      upgradeProBtn.hidden = data.tier !== "free";
-      upgradePremiumBtn.hidden = data.tier === "premium";
+        `Current plan: ${tierLabel}${trialSuffix} · ${data.imagesLast30Days}/${data.imageGenPerMonth} image generations this month`;
+      // Keyed to what they PAY for, so someone only trialling still sees Subscribe.
+      upgradeProBtn.hidden = data.paidTier !== "free";
+      upgradePremiumBtn.hidden = data.paidTier === "premium";
+
+      // Menu badge + the one-time "ending soon" reminder.
+      if (data.trial) {
+        planMenuBadgeEl.textContent = `${tierLabel} trial · ${data.trial.daysLeft}d left`;
+        planMenuBadgeEl.hidden = false;
+        if (data.trial.daysLeft <= 2 && !trialReminderShown) {
+          trialReminderShown = true;
+          showNotice(`Your ${tierLabel} trial ends in ${daysWord(data.trial.daysLeft)} (${fmtShortDate(data.trial.expiresAt)}). Open Plan in the menu to subscribe and keep it.`);
+        }
+      } else if (data.tier !== "free") {
+        planMenuBadgeEl.textContent = tierLabel;
+        planMenuBadgeEl.hidden = false;
+      } else {
+        planMenuBadgeEl.hidden = true;
+      }
 
       renderInviteSection(data.referrals);
 
@@ -2058,17 +2262,18 @@
         <table class="plan-table">
           <tr><th></th><th>Free</th><th>Pro</th><th>Premium</th></tr>
           <tr><td>Price</td><td>$0</td><td>${plans.prices.pro} ⭐</td><td>${plans.prices.premium} ⭐</td></tr>
+          <tr><td>Model tiers</td><td>Flash, Standard</td><td>+ Max</td><td>+ Extra</td></tr>
           <tr><td>Msgs</td><td>${free.messagesPerDay}/day</td><td>${pro.messagesPerHour}/hr</td><td>Unlimited</td></tr>
-          <tr><td>Tokens</td><td>${tok(free.maxTokens)}</td><td>${tok(pro.maxTokens)}</td><td>${tok(premium.maxTokens)}</td></tr>
+          <tr><td>Tokens/mo</td><td>${tok(free.maxTokens)}</td><td>${tok(pro.maxTokens)}</td><td>${tok(premium.maxTokens)}</td></tr>
           <tr><td>Files</td><td>${mb(free.maxFileBytes)}</td><td>${mb(pro.maxFileBytes)}</td><td>${mb(premium.maxFileBytes)}</td></tr>
           <tr><td>Imgs/msg</td><td>${free.maxImagesPerMessage}</td><td>${pro.maxImagesPerMessage}</td><td>${premium.maxImagesPerMessage}</td></tr>
           <tr><td>Images/mo</td><td>${free.imageGenPerMonth}</td><td>${pro.imageGenPerMonth}</td><td>Unlimited</td></tr>
           <tr><td>Voice/day</td><td>${voiceMinutes(free)}</td><td>${voiceMinutes(pro)}</td><td>${voiceMinutes(premium)}</td></tr>
           <tr><td>Excel/PPT/code</td><td>—</td><td>✓</td><td>✓</td></tr>
           <tr><td>Extra model/day</td><td>—</td><td>—</td><td>${premium.extraPerDay}</td></tr>
-          <tr><td>Extra bonuses</td><td>—</td><td>—</td><td>Soon</td></tr>
+          <tr><td>New features</td><td>—</td><td>—</td><td>Soon</td></tr>
         </table>
-        <div class="plan-table-note">🎬 Video generation — 🚧 under production, coming to paid plans once there are real subscribers.</div>`;
+        <div class="plan-table-note">🎬 Video generation — coming soon for paid tiers.</div>`;
       planDetailsTableEl.hidden = false;
     } catch (err) {
       tg?.showAlert?.(`Couldn't load plan details: ${err.message}`) ?? alert(`Couldn't load plan details: ${err.message}`);
@@ -2531,10 +2736,24 @@
     return btn;
   }
 
-  function renderTypingBubble() {
+  // Client-side only — costs no AI tokens and no server work. Picks the
+  // wording from what the person just turned on or sent.
+  function pickTypingLabel({ text, files, useThinking, useSearch }) {
+    if (text.startsWith("/review")) return "Reviewing your code…";
+    if (useSearch && useThinking) return "Searching, then thinking deeply…";
+    if (useSearch) return "Searching the web…";
+    if (useThinking) return "Thinking deeply for a better answer…";
+    if (files.length > 1) return "Reading your files…";
+    if (files.length === 1) return "Reading your file…";
+    if (text.length > 1500) return "Reading your long message…";
+    return "Thinking…";
+  }
+
+  function renderTypingBubble(label = "") {
     const el = document.createElement("div");
     el.className = "bubble assistant";
-    el.innerHTML = `<span class="typing-dots"><span></span><span></span><span></span></span>`;
+    el.innerHTML = `<span class="typing-wrap"><span class="typing-dots"><span></span><span></span><span></span></span><span class="typing-label"></span></span>`;
+    el.querySelector(".typing-label").textContent = label;
     messagesEl.appendChild(el);
     return el;
   }
@@ -2851,7 +3070,7 @@
 
     const bubbleAttachments = files.map((f) => ({ name: f.name, type: f.type }));
     const userBubbleEl = renderBubble("user", text, bubbleAttachments);
-    const typingEl = renderTypingBubble();
+    const typingEl = renderTypingBubble(pickTypingLabel({ text, files, useThinking, useSearch }));
     scrollMessagesToBottom();
 
     let uploadedAttachments = [];

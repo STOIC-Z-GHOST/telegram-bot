@@ -75,7 +75,7 @@ import { classifyFile, ALL_FILES_SUMMARY } from "../lib/fileTypes.js";
 import { extractDocumentText, buildDocumentPrompt } from "../lib/attachments.js";
 import { transcribeAudio } from "../lib/transcribe.js";
 import { ocrToText, buildOcrPrompt } from "../lib/ocr.js";
-import { getUserTier, activateSubscription, getTierPrices, setTierPrice, isDowngrade, MAX_PRICE_STARS, SUBSCRIPTION_PERIOD_SECONDS } from "../lib/subscriptions.js";
+import { getUserTier, getPaidTier, activateSubscription, getTierPrices, setTierPrice, isDowngrade, MAX_PRICE_STARS, SUBSCRIPTION_PERIOD_SECONDS } from "../lib/subscriptions.js";
 import {
   referralCodeFor,
   inviteLinkFor,
@@ -545,7 +545,7 @@ async function handleCallbackQuery(cq) {
       await answerCallbackQuery(cq.id, "Unknown plan.");
       return;
     }
-    const currentTier = await getUserTier(fromId);
+    const currentTier = await getPaidTier(fromId); // a trial doesn't count — they can still buy
     if (currentTier === "owner" || isDowngrade(currentTier, tier)) {
       await answerCallbackQuery(cq.id, currentTier === "owner" ? "You're the owner — no limits to raise." : `You're already on a higher plan (${currentTier}).`);
       return;
@@ -582,8 +582,9 @@ async function buildPlanComparisonText() {
   const lines = [
     row("Plan", "Free", "Pro", "Premium"),
     row("Price", "$0", `${prices.pro} ⭐`, `${prices.premium} ⭐`),
+    row("Models", "Flash,Std", "+Max", "+Extra"),
     row("Msgs", `${free.messagesPerDay}/day`, `${pro.messagesPerHour}/hr`, "Unlimited"),
-    row("Tokens", fmtTokens(free.maxTokens), fmtTokens(pro.maxTokens), fmtTokens(premium.maxTokens)),
+    row("Tokens/mo", fmtTokens(free.maxTokens), fmtTokens(pro.maxTokens), fmtTokens(premium.maxTokens)),
     row("Files", fmtMB(free.maxFileBytes), fmtMB(pro.maxFileBytes), fmtMB(premium.maxFileBytes)),
     row("Imgs/msg", free.maxImagesPerMessage, pro.maxImagesPerMessage, premium.maxImagesPerMessage),
     row("Images/mo", free.imageGenPerMonth, pro.imageGenPerMonth, "Unlimited"),
@@ -591,7 +592,7 @@ async function buildPlanComparisonText() {
     row("Xlsx/pptx", "—", "✓", "✓"),
   ];
 
-  return `<pre>${lines.join("\n")}</pre>\n\n🎤 Voice/day shows clips / total minutes of audio. Each voice message can be up to ${free.maxVoiceSeconds}s (Free) / ${pro.maxVoiceSeconds}s (Pro) / ${premium.maxVoiceSeconds}s (Premium). Excel, PowerPoint and code/data files (Xlsx/pptx) are Pro and Premium only.\n\n📎 Multi-image messages (Imgs/msg) are a mini app feature — the DM bot still takes one photo per message.\n\n🔗 Free tier numbers above don't include your own /invite bonus.\n\n🎬 Video generation — 🚧 under production, coming to paid plans once there are real subscribers.`;
+  return `<pre>${lines.join("\n")}</pre>\n\nVoice/day = clips / minutes of audio. Models: you pick one in the mini app (Free: Flash + Standard, Pro adds Max, Premium adds Extra). Imgs/msg is a mini-app feature, and free numbers don't include your /invite bonus.\n\n🎬 Video generation — coming soon for paid tiers.`;
 }
 
 // A Stars invoice with subscription_period set bills every 30 days
@@ -814,7 +815,7 @@ export default async function handler(req, res) {
       await sendTelegramMessage(
         justCredited.referrerId,
         "🎉 100 invites — that's genuinely impressive. As a thank-you, you've got 3 days of Pro " +
-          "(1M tokens, 100 msgs/hr, more images) starting now. Enjoy, and thanks for spreading the word!"
+          "(1.8M tokens per 30 days, 100 msgs/hr, more images) starting now. Enjoy, and thanks for spreading the word!"
       );
     }
   }
@@ -832,7 +833,7 @@ export default async function handler(req, res) {
         : `📨 Invite friends — have them send this to the bot:\n/start ${code}`,
       "",
       `Credited invites (last 60 days): ${creditedCount} — counts once a friend sends their first message, not just opens the bot. This rolls forward, so keep inviting to stay near the top of your ladder.`,
-      `Current bonus: +${bonus.messagesPerDay} msgs/day, +${bonus.imageGenPerMonth} images/mo, +${bonus.maxAttachmentsPerChat} attachments/chat, +${Math.round(bonus.maxTokens / 1000)}K tokens`,
+      `Current bonus: +${bonus.messagesPerDay} msgs/day, +${bonus.imageGenPerMonth} images/mo, +${bonus.maxAttachmentsPerChat} attachments/chat, +${Math.round(bonus.maxTokens / 1000)}K tokens/mo`,
     ];
     if (nextTier) {
       const need = nextTier.invites - creditedCount;
