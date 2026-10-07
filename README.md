@@ -449,6 +449,25 @@ deploying** — starting a trial writes to the new `plan_trials` table.
 - Numbers live in `TRIAL_KINDS` in `lib/limits.js`; the Plan sheet reads them
   from the server, so changing them there changes what users see.
 
+## Usage bars and when limits free up
+
+The menu (☰) footer shows a thin bar per limit — **Messages** and **Tokens**, each on its
+own line, plus a **trial** line (with its remaining days) while a trial is running. A bar
+fills as the limit is used, turns amber at 80%, and when it is full shows a live
+countdown instead of the numbers.
+
+Every window is **rolling**, not clock-aligned (no midnight reset, no timezone to pick):
+
+| Limit | Window | Full-bar countdown means |
+|---|---|---|
+| Messages, Free | rolling 24 hours | "next message in …" — when the oldest message ages out |
+| Messages, Pro/Premium | rolling hour | same, hourly |
+| Tokens | rolling `TOKEN_WINDOW_DAYS` (default 30) | "frees up in …" — when enough old usage ages out to fit the next one |
+
+So a full bar doesn't empty all at once — room frees up one message at a time as the
+oldest ones pass 24 hours. `TOKEN_WINDOW_DAYS=1` would make tokens a daily limit, but
+the `maxTokens` numbers in `lib/limits.js` mean "per window", so change them with it.
+
 ## Plans and limits
 
 Three tiers, checked against real usage (see `lib/limits.js`) — you, as

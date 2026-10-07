@@ -394,16 +394,24 @@
   .menu-bot-name { font-size: 16.5px; font-weight: 600; }
   .menu-designer { font-size: 12.5px; color: var(--hint); }
   .menu-list { padding: 10px 0; flex: 1; }
-  .menu-usage {
-    padding: 12px 20px;
-    border-bottom: 1px solid var(--section-separator);
-  }
-  .menu-usage-row {
+  /* Usage lives in the footer: one line each for trial / messages / tokens,
+     every one with a thin bar that fills as the limit is used up. */
+  .menu-usage { width: 100%; display: flex; flex-direction: column; gap: 11px; }
+  .usage-line-top {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 10px;
     font-size: 12.5px;
-    color: var(--hint);
-    text-align: center;
-    line-height: 1.6;
+    margin-bottom: 5px;
   }
+  .usage-line-label { font-weight: 600; color: var(--text); white-space: nowrap; }
+  .usage-line-text { color: var(--hint); text-align: right; font-variant-numeric: tabular-nums; }
+  .usage-bar { height: 5px; border-radius: 3px; background: var(--section-separator); overflow: hidden; }
+  .usage-bar-fill { height: 100%; width: 0; border-radius: 3px; background: var(--button); transition: width 0.4s ease, background 0.3s ease; }
+  .usage-line.warn .usage-bar-fill { background: #f5a524; }
+  .usage-line.full .usage-bar-fill { background: #e5484d; }
+  .usage-line.full .usage-line-text { color: #e5484d; font-weight: 600; }
   .menu-item {
     width: 100%;
     display: flex;
@@ -449,7 +457,14 @@
   }
   .plan-card-btn.primary { background: var(--button); color: var(--button-text); border-color: var(--button); }
   .plan-card-btn:disabled { opacity: 0.5; cursor: default; }
-  .menu-footer { padding: 16px 20px; display: flex; justify-content: center; }
+  .menu-footer {
+    padding: 14px 20px 16px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 14px;
+    border-top: 1px solid var(--section-separator);
+  }
   .credit-box {
     padding: 8px 14px;
     border-radius: 20px;
@@ -1397,10 +1412,6 @@
     <div class="menu-bot-name" id="menu-bot-name"></div>
     <div class="menu-designer">Powered by @assist_ai</div>
   </div>
-  <div class="menu-usage" id="menu-usage" hidden>
-    <div class="menu-usage-row" id="menu-usage-messages"></div>
-    <div class="menu-usage-row" id="menu-usage-tokens"></div>
-  </div>
   <nav class="menu-list">
     <button class="menu-item" id="open-settings-btn">
       <span class="menu-item-icon">⚙️</span> Settings
@@ -1410,6 +1421,20 @@
     </button>
   </nav>
   <div class="menu-footer">
+    <div class="menu-usage" id="menu-usage" hidden>
+      <div class="usage-line" id="usage-trial-line" hidden>
+        <div class="usage-line-top"><span class="usage-line-label" id="usage-trial-label"></span><span class="usage-line-text" id="usage-trial-text"></span></div>
+        <div class="usage-bar"><div class="usage-bar-fill" id="usage-trial-fill"></div></div>
+      </div>
+      <div class="usage-line" id="usage-messages-line">
+        <div class="usage-line-top"><span class="usage-line-label">Messages</span><span class="usage-line-text" id="usage-messages-text"></span></div>
+        <div class="usage-bar"><div class="usage-bar-fill" id="usage-messages-fill"></div></div>
+      </div>
+      <div class="usage-line" id="usage-tokens-line">
+        <div class="usage-line-top"><span class="usage-line-label">Tokens</span><span class="usage-line-text" id="usage-tokens-text"></span></div>
+        <div class="usage-bar"><div class="usage-bar-fill" id="usage-tokens-fill"></div></div>
+      </div>
+    </div>
     <div class="credit-box">@assist_ai · © 2026</div>
   </div>
 </aside>
@@ -1548,8 +1573,16 @@
   const memoryCountEl = document.getElementById("memory-count");
   const addMemoryBtn = document.getElementById("add-memory-btn");
   const menuUsageEl = document.getElementById("menu-usage");
-  const menuUsageMessagesEl = document.getElementById("menu-usage-messages");
-  const menuUsageTokensEl = document.getElementById("menu-usage-tokens");
+  const usageTrialLineEl = document.getElementById("usage-trial-line");
+  const usageTrialLabelEl = document.getElementById("usage-trial-label");
+  const usageTrialTextEl = document.getElementById("usage-trial-text");
+  const usageTrialFillEl = document.getElementById("usage-trial-fill");
+  const usageMessagesLineEl = document.getElementById("usage-messages-line");
+  const usageMessagesTextEl = document.getElementById("usage-messages-text");
+  const usageMessagesFillEl = document.getElementById("usage-messages-fill");
+  const usageTokensLineEl = document.getElementById("usage-tokens-line");
+  const usageTokensTextEl = document.getElementById("usage-tokens-text");
+  const usageTokensFillEl = document.getElementById("usage-tokens-fill");
   const upgradeSectionEl = document.getElementById("upgrade-section");
   const currentTierLabelEl = document.getElementById("current-tier-label");
   const upgradeProBtn = document.getElementById("upgrade-pro-btn");
@@ -1713,6 +1746,7 @@
     loadUsage();
   }
   function closeMenu() {
+    stopUsageTicker();
     menuOverlay.classList.remove("visible");
     menuDrawer.classList.remove("open");
     setTimeout(() => { menuOverlay.hidden = true; }, 250);
@@ -1778,6 +1812,108 @@
     tg?.HapticFeedback?.selectionChanged?.();
     closeTierSheet();
   });
+
+  // --- Usage bars (menu footer) ---
+  // Every limit is a ROLLING window, so a full bar doesn't "reset" all at once —
+  // room frees up as the oldest usage ages out. The server works out when
+  // (messagesResetAt / tokensResetAt) and this just counts down to it.
+  let usageState = null;   // last /api/miniapp/usage payload
+  let usageTicker = null;
+  let usageRefreshQueued = false;
+
+  const compactCount = (n) => {
+    if (n >= 1000000) return `${(n / 1000000).toFixed(n >= 10000000 ? 0 : 1).replace(/\.0$/, "")}M`;
+    if (n >= 1000) return `${(n / 1000).toFixed(n >= 10000 ? 0 : 1).replace(/\.0$/, "")}K`;
+    return String(n);
+  };
+  function formatCountdown(ms) {
+    const s = Math.max(0, Math.ceil(ms / 1000));
+    const d = Math.floor(s / 86400);
+    const h = Math.floor((s % 86400) / 3600);
+    const m = Math.floor((s % 3600) / 60);
+    if (d >= 1) return `${d}d ${h}h`;
+    if (h >= 1) return `${h}h ${String(m).padStart(2, "0")}m`;
+    if (m >= 1) return `${m}m ${String(s % 60).padStart(2, "0")}s`;
+    return `${s}s`;
+  }
+
+  // Fills one line. Returns true while it is showing a live countdown.
+  function paintUsageLine(lineEl, fillEl, textEl, { used, limit, normalText, resetAt, resetPrefix }) {
+    const pct = limit > 0 ? Math.min(100, (used / limit) * 100) : 0;
+    fillEl.style.width = `${pct}%`;
+    const full = limit > 0 && used >= limit;
+    lineEl.classList.toggle("full", full);
+    lineEl.classList.toggle("warn", !full && pct >= 80);
+    if (full && resetAt) {
+      const ms = new Date(resetAt).getTime() - Date.now();
+      if (ms > 0) {
+        textEl.textContent = `Full · ${resetPrefix} ${formatCountdown(ms)}`;
+        return true;
+      }
+      textEl.textContent = "Refreshing…";
+      if (!usageRefreshQueued) {
+        usageRefreshQueued = true;
+        setTimeout(() => { usageRefreshQueued = false; loadUsage(); }, 1500);
+      }
+      return false;
+    }
+    textEl.textContent = full ? "Full" : normalText;
+    return false;
+  }
+
+  function renderUsageFooter() {
+    const d = usageState;
+    if (!d) {
+      menuUsageEl.hidden = true;
+      return;
+    }
+    menuUsageEl.hidden = false;
+    let counting = false;
+
+    // Trial line — only while a trial is running. The bar fills as its days pass.
+    if (d.trial) {
+      const totalMs = d.trial.totalDays * 86400000;
+      const leftMs = new Date(d.trial.expiresAt).getTime() - Date.now();
+      usageTrialLineEl.hidden = false;
+      usageTrialLabelEl.textContent = `⭐ ${planLabel(d.trial.plan)} trial`;
+      usageTrialTextEl.textContent = leftMs > 86400000 ? `${daysWord(Math.ceil(leftMs / 86400000))} left` : `${formatCountdown(leftMs)} left`;
+      usageTrialFillEl.style.width = `${Math.max(0, Math.min(100, (1 - leftMs / totalMs) * 100))}%`;
+      usageTrialLineEl.classList.toggle("warn", leftMs <= 2 * 86400000);
+    } else {
+      usageTrialLineEl.hidden = true;
+    }
+
+    const msgWindow = d.messageWindow === "day" ? "today" : "this hour";
+    counting = paintUsageLine(usageMessagesLineEl, usageMessagesFillEl, usageMessagesTextEl, {
+      used: d.messagesUsed,
+      limit: d.messagesLimit,
+      normalText: `${d.messagesUsed} / ${d.messagesLimit} ${msgWindow}`,
+      resetAt: d.messagesResetAt,
+      resetPrefix: "next message in",
+    }) || counting;
+
+    const tokWindow = d.tokenWindowDays === 1 ? "today" : `${d.tokenWindowDays} days`;
+    counting = paintUsageLine(usageTokensLineEl, usageTokensFillEl, usageTokensTextEl, {
+      used: d.tokensUsed,
+      limit: d.maxTokens,
+      normalText: `${compactCount(d.tokensUsed)} / ${compactCount(d.maxTokens)} · ${tokWindow}`,
+      resetAt: d.tokensResetAt,
+      resetPrefix: "frees up in",
+    }) || counting;
+
+    // Tick once a second only while a countdown is visible and the menu is open.
+    if (counting && menuDrawer.classList.contains("open")) {
+      if (!usageTicker) usageTicker = setInterval(renderUsageFooter, 1000);
+    } else {
+      stopUsageTicker();
+    }
+  }
+  function stopUsageTicker() {
+    if (usageTicker) {
+      clearInterval(usageTicker);
+      usageTicker = null;
+    }
+  }
 
   // --- Plan sheet (menu item below Settings) ---
   let trialReminderShown = false; // the "ends soon" notice shows once per visit, not on every refresh
@@ -2182,10 +2318,8 @@
         return;
       }
       openPlanBtn.hidden = false;
-      menuUsageEl.hidden = false;
-      const windowLabel = data.messageWindow === "day" ? "today" : "this hour";
-      menuUsageMessagesEl.textContent = `${data.messagesUsed}/${data.messagesLimit} messages ${windowLabel}`;
-      menuUsageTokensEl.textContent = `${data.tokensLast30Days.toLocaleString()}/${data.maxTokens.toLocaleString()} tokens used (30 days)`;
+      usageState = data;
+      renderUsageFooter();
 
       upgradeSectionEl.hidden = false;
       const tierLabel = data.tier.charAt(0).toUpperCase() + data.tier.slice(1);
@@ -2222,6 +2356,7 @@
       }
     } catch {
       // Fails closed — no usage or upgrade options shown rather than a broken row.
+      usageState = null;
       menuUsageEl.hidden = true;
       upgradeSectionEl.hidden = true;
       inviteSectionEl.hidden = true;

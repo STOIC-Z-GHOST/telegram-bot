@@ -7,7 +7,7 @@
 import { requireTelegramUser } from "../../lib/telegramAuth.js";
 import { isOwner } from "../../lib/access.js";
 import { getSubscriptionInfo } from "../../lib/subscriptions.js";
-import { getUsageSummary, TIER_LIMITS, limitsFor, countVoiceLast24h } from "../../lib/limits.js";
+import { getUsageSummary, TIER_LIMITS, TRIAL_KINDS, TOKEN_WINDOW_DAYS, limitsFor, countVoiceLast24h, messagesFreeAt, tokensFreeAt } from "../../lib/limits.js";
 import { PRO_ONLY_EXTS } from "../../lib/fileTypes.js";
 import { getCreditedReferralCount, getNextMilestone, referralCodeFor, inviteLinkFor } from "../../lib/referrals.js";
 
@@ -45,7 +45,7 @@ export default async function handler(req, res) {
   const info = await getSubscriptionInfo(user.id);
   const tier = info.tier; // effective: a trial counts as the plan it unlocks
   const limits = await limitsFor(user.id); // referral-bonus-aware for free tier, trial-capped during a trial
-  const [{ messagesLastHour, messagesLast24h, tokensLast30Days, imagesLast30Days }, voiceUsed] = await Promise.all([
+  const [{ messagesLastHour, messagesLast24h, tokensInWindow, imagesLast30Days }, voiceUsed] = await Promise.all([
     getUsageSummary(user.id),
     countVoiceLast24h(user.id),
   ]);
@@ -63,14 +63,16 @@ export default async function handler(req, res) {
             plan: tier,
             expiresAt: new Date(info.expiresAt).toISOString(),
             daysLeft: Math.max(1, Math.ceil((new Date(info.expiresAt).getTime() - Date.now()) / 86400000)),
+            totalDays: TRIAL_KINDS[info.trialKind]?.days ?? 3, // referral_trial is 3 days
           }
         : null,
     // Free tier is capped per day; Pro/Premium per rolling hour.
     messageWindow: tier === "free" ? "day" : "hour",
     messagesUsed: tier === "free" ? messagesLast24h : messagesLastHour,
     messagesLimit: tier === "free" ? limits.messagesPerDay : limits.messagesPerHour,
-    tokensLast30Days,
+    tokensUsed: tokensInWindow,
     maxTokens: limits.maxTokens,
+    tokenWindowDays: TOKEN_WINDOW_DAYS,
     imagesLast30Days,
     imageGenPerMonth: limits.imageGenPerMonth,
     maxImagesPerMessage: limits.maxImagesPerMessage,
@@ -80,6 +82,16 @@ export default async function handler(req, res) {
     canUseProFiles: tier !== "free",
     voice: { perDay: limits.voicePerDay, used: voiceUsed, maxSeconds: limits.maxVoiceSeconds },
   };
+
+  // A full bar gets a countdown: when the person is back under the limit. The
+  // windows are rolling, so this is "room frees up at", not "everything resets".
+  const messageWindowMs = (tier === "free" ? 24 : 1) * 60 * 60 * 1000;
+  const [messagesResetAt, tokensResetAt] = await Promise.all([
+    body.messagesUsed >= body.messagesLimit ? messagesFreeAt(user.id, messageWindowMs, body.messagesLimit) : null,
+    body.tokensUsed >= body.maxTokens ? tokensFreeAt(user.id, TOKEN_WINDOW_DAYS * 24 * 60 * 60 * 1000, body.maxTokens) : null,
+  ]);
+  body.messagesResetAt = messagesResetAt ? messagesResetAt.toISOString() : null;
+  body.tokensResetAt = tokensResetAt ? tokensResetAt.toISOString() : null;
 
   if (tier === "free") {
     const creditedReferrals = await getCreditedReferralCount(user.id);
