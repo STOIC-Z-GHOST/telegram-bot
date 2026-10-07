@@ -1883,16 +1883,17 @@
       usageTrialLineEl.hidden = true;
     }
 
-    const msgWindow = d.messageWindow === "day" ? "today" : "this hour";
+    // "last 24h", not "today": the windows are rolling, so nothing resets at midnight.
+    const msgWindow = d.messageWindow === "day" ? "last 24h" : "last hour";
     counting = paintUsageLine(usageMessagesLineEl, usageMessagesFillEl, usageMessagesTextEl, {
       used: d.messagesUsed,
       limit: d.messagesLimit,
-      normalText: `${d.messagesUsed} / ${d.messagesLimit} ${msgWindow}`,
+      normalText: `${d.messagesUsed} / ${d.messagesLimit} · ${msgWindow}`,
       resetAt: d.messagesResetAt,
       resetPrefix: "next message in",
     }) || counting;
 
-    const tokWindow = d.tokenWindowDays === 1 ? "today" : `${d.tokenWindowDays} days`;
+    const tokWindow = d.tokenWindowDays === 1 ? "last 24h" : `last ${d.tokenWindowDays} days`;
     counting = paintUsageLine(usageTokensLineEl, usageTokensFillEl, usageTokensTextEl, {
       used: d.tokensUsed,
       limit: d.maxTokens,
