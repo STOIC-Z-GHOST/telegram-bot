@@ -38,7 +38,7 @@
 //                     billed monthly, auto-renewing)
 //   /invite          shows your referral link/code, credited invites, and
 //                     current referral bonus
-//   /channelbonus    verifies channel membership for +3 image
+//   (/channelbonus was retired — the channel is now just a join prompt in /start)
 //                     generations/month, renewable every 30 days
 //   /think <q>       slower, more thorough answer (higher reasoning
 //                     effort on Groq, a real thinking budget on Gemini) —
@@ -87,13 +87,9 @@ import {
   getReferralBonus,
   getNextMilestone,
 } from "../lib/referrals.js";
-import {
-  channelUsername,
-  checkChannelMembership,
-  recordChannelVerification,
-  hasActiveChannelBonus,
-  CHANNEL_BONUS_IMAGES,
-} from "../lib/channel.js";
+import { channelUsername, channelJoinRow } from "../lib/channel.js";
+import { identityRules } from "../lib/identity.js";
+import { brandImage } from "../lib/brandImage.js";
 
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
@@ -142,25 +138,21 @@ function maybeAddFooter(text, tier) {
 // the free tier — see the README for why "more powerful" mostly means
 // better prompting, not a bigger model).
 const SYSTEM_PROMPT =
-  "You are a helpful, knowledgeable personal assistant chatting over Telegram. " +
+  "You are a helpful, knowledgeable personal assistant that people chat with directly over Telegram. " +
   "Match your answer's length and depth to the question — a quick, simple " +
   "question gets a quick, simple answer; go into real detail only when the " +
   "question is genuinely complex or the person is clearly asking for depth " +
   "(or used /think). Plain text only, no markdown headers " +
   "(Telegram doesn't render them well) — use line breaks and dashes for " +
-  "structure instead. If asked who you are, what model you are, or who made you: " +
-  "you're this bot's own AI assistant. Say honestly that it runs on a mix of AI " +
-  "models behind the scenes and that you can't see which one is answering a given " +
-  "message — never name specific providers or models, never say how many there " +
-  "are, never claim which AI makes the images, never claim to be ChatGPT, GPT-4, " +
-  "or any other OpenAI product, and don't cite a training cutoff date as if you " +
-  "were one of those products. If the person keeps pressing (\"only 2?\", \"which " +
-  "ones?\"), answer in fresh words that you don't know — don't repeat your earlier " +
-  "sentence. " +
+  "structure instead. " +
+  identityRules(
+    "chat and answer questions, read PDFs and Word or text files, look at photos, " +
+      "understand voice notes, and make pictures with /image"
+  ) +
   "If asked what commands or features this bot has: the complete, real list is " +
   "/start, /think <question> (slower, more thorough answer), " +
   "/image <description> or /img <description> (AI image generation), /invite " +
-  "(referral link), /channelbonus, /upgrade, and /plans — nothing else. Never " +
+  "(referral link), /upgrade, and /plans — nothing else. Never " +
   "invent or describe a command outside this exact list (no /weather, /remind, " +
   "/todo, /news, /poll, or anything else that sounds plausible but isn't real) " +
   "— if asked about a feature that isn't on this list, say plainly that this " +
@@ -273,7 +265,7 @@ async function askPollinationsImage(prompt) {
   if (!resp.ok) throw new Error(`Pollinations error ${resp.status}: ${await resp.text()}`);
   const mimeType = resp.headers.get("content-type") || "image/jpeg";
   const arrayBuffer = await resp.arrayBuffer();
-  return { buffer: Buffer.from(arrayBuffer), mimeType };
+  return brandImage(Buffer.from(arrayBuffer), mimeType); // Assist AI badge, bottom-left
 }
 
 async function askGroq(prompt, { thinking = false } = {}) {
@@ -417,17 +409,17 @@ async function sendStartMessage(chatId) {
       "I can read PDFs, Word and text files too (Excel, PowerPoint and code files on Pro). " +
       "Try /think <question> for a slower, more thorough answer " +
       "when you need it. Send /upgrade any time to see your current plan and raise your limits, " +
-      "/invite to earn more free usage by inviting friends, or /channelbonus for extra image " +
-      "generations by joining the channel." +
+      "/invite to earn more free usage by inviting friends." +
       (MINI_APP_URL ? " There's also a proper chat app now, with saved history." : "") +
+      (channelUsername() ? `\n\n📢 Join @${channelUsername()} for updates and more info about the bot.` : "") +
       "\n\n⚠️ This bot is AI and can make mistakes. Please double-check cited sources." +
       `\n\n${PRODUCT_CREDIT}`,
   };
-  if (MINI_APP_URL) {
-    body.reply_markup = {
-      inline_keyboard: [[{ text: "💬 Open Chat App", web_app: { url: MINI_APP_URL } }]],
-    };
-  }
+  const keyboard = [];
+  if (MINI_APP_URL) keyboard.push([{ text: "💬 Open Chat App", web_app: { url: MINI_APP_URL } }]);
+  const joinRow = channelJoinRow();
+  if (joinRow) keyboard.push(joinRow);
+  if (keyboard.length) body.reply_markup = { inline_keyboard: keyboard };
   const resp = await fetchWithTimeout(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -847,30 +839,11 @@ export default async function handler(req, res) {
   }
 
   if (text === "/channelbonus") {
-    const username = channelUsername();
-    if (!username) {
-      await sendTelegramMessage(chatId, "The channel bonus isn't set up on this bot yet.");
-      res.status(200).send("OK");
-      return;
-    }
-    const alreadyActive = await hasActiveChannelBonus(chatId);
-    const { isMember } = await checkChannelMembership(chatId);
-    if (isMember) {
-      await recordChannelVerification(chatId);
-      await sendTelegramMessage(
-        chatId,
-        alreadyActive
-          ? `✅ Still verified — your +${CHANNEL_BONUS_IMAGES} images/month bonus is renewed for another 30 days.`
-          : `✅ Verified! You've got +${CHANNEL_BONUS_IMAGES} image generations/month for the next 30 days. ` +
-              `Run /channelbonus again before it expires to keep it going.`
-      );
-    } else {
-      await sendTelegramMessageWithKeyboard(
-        chatId,
-        `Join @${username}, then run /channelbonus again to unlock +${CHANNEL_BONUS_IMAGES} image generations/month.`,
-        [[{ text: "📢 Join the channel", url: `https://t.me/${username}` }]]
-      );
-    }
+    // Retired: the channel is just where updates and info live now.
+    const joinRow = channelJoinRow();
+    const note = "The channel bonus has been retired — you now get free Pro and Premium trials instead (see /upgrade).";
+    if (joinRow) await sendTelegramMessageWithKeyboard(chatId, `${note}\n\nThe channel is where updates and info about the bot live.`, [joinRow]);
+    else await sendTelegramMessage(chatId, note);
     res.status(200).send("OK");
     return;
   }

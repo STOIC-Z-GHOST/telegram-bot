@@ -1,6 +1,6 @@
 
 # environment variables
-.env.example
+.env
 .env.local
 .env.development.local
 .env.production.local
@@ -25,5 +25,3 @@ migrate_referral_trials_v10.sql
 migrate_channel_bonus_v11.sql
 migrate_search_cache_v12.sql
 migrate_chat_pinning_v13.sql
-migrate_voice_seconds_v14.sql
-migrate_plan_trials_v15.sql

@@ -609,15 +609,47 @@ the higher limits. Currently only wired into the DM's text/`/think`/
 document replies (via `maybeAddFooter`), not image captions or
 photo/PDF-vision answers.
 
-**`/channelbonus`** (`lib/channel.js`) is a separate free-tier bonus from
-referrals — joining `TELEGRAM_CHANNEL_USERNAME` unlocks
-`CHANNEL_BONUS_IMAGES` (+3) image generations/month for 30 days.
-Verification is explicit and on-demand (running the command), not
-automatic on every message — polling Telegram's `getChatMember` per
-message would add real latency for no real benefit. The bonus simply
-lapses if a user never re-runs `/channelbonus` before the 30 days are up
-(e.g. because they left the channel), rather than the bot needing to
-detect that they left.
+**Natural-language image requests and the Flash tier.** In the mini app the model
+itself decides when a message is an image request (it answers with a
+`[GENERATE_IMAGE: ...]` marker). Flash's small model misread "build a simple
+website" as one, and each false positive spends one of a free user's few monthly
+image generations. So on Flash the instruction is only offered when the message
+plausibly asks for a picture (`plausiblyImageRequest` in `lib/imagegen.js`: image
+words in English and a few other languages; mostly non-Latin text such as Amharic
+always passes). Standard, Max and Extra are unchanged. `/image` always works on
+every tier.
+
+**Viewing and saving images (mini app).** Tapping a picture in a chat opens a
+full-screen viewer: tap the picture to zoom, ‹ › to move between several, ✕ or the
+dark area to close, **Save** to keep it. Save uses Telegram's own downloader
+(`downloadFile`, Telegram 8.0+), which is the only thing that works reliably inside
+the app; on older versions it opens the image in the browser (press and hold to
+save), and in a plain browser it downloads directly.
+
+**Assist AI badge on generated images.** `lib/brandImage.js` stamps a small badge
+(logo + name, from `lib/badgeData.js`) in the bottom-LEFT of every picture from
+`/image` or a natural-language request, in both the DM bot and the mini app. It
+sits away from Pollinations' own watermark in the bottom-right and never covers
+it — Pollinations removes its watermark itself for accounts with an API key, which
+is the supported way if you ever want it gone. If stamping fails for any reason the
+original image is sent unchanged. To change the badge, regenerate
+`lib/badgeData.js` from `public/logo.png`.
+
+**The announcement channel** (`lib/channel.js`) is no longer a bonus. The old
+`/channelbonus` image-generation reward was removed once free trials existed; now
+`/start` simply ends with "Join @channel for updates and more info about the bot"
+plus a **📢 Join for updates & info** button, taken from `TELEGRAM_CHANNEL_USERNAME`
+(unset = the prompt is left out). It is a prompt, not a gate — nobody is blocked
+from using the bot until they join. Anyone who still sends `/channelbonus` gets a
+one-line "retired" reply with the join button. The `channel_memberships` table is
+now unused; it's harmless to leave, or drop it with
+`DROP TABLE IF EXISTS channel_memberships;`.
+
+**Identity.** What the assistant says when asked "who are you" lives in
+`lib/identity.js` and is shared by the DM bot and the mini app: it answers in the
+first person as **Assist AI** (change with the `BOT_NAME` env var or in that file),
+says what it can do, and — when asked about the model — says honestly that it runs
+on a mix of models and can't see which one is answering, without naming providers.
 
 ## Notes
 

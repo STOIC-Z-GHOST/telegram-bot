@@ -55,7 +55,7 @@ import { requireTelegramUser } from "../../lib/telegramAuth.js";
 import { getConversationReply, MODEL_TIER_MIN_PLAN, MAX_MODEL_ID } from "../../lib/ai.js";
 import { searchWeb, condenseSearchOutcomeForCache, SEARCH_CACHE_FRESHNESS_MS } from "../../lib/search.js";
 import { analyzeAttachments } from "../../lib/attachments.js";
-import { generateImage, extractImageGenMarker } from "../../lib/imagegen.js";
+import { generateImage, extractImageGenMarker, plausiblyImageRequest } from "../../lib/imagegen.js";
 import { isMemoryEnabled, listMemories, saveMemory, extractMemoryMarker, MEMORY_LIMIT } from "../../lib/memory.js";
 import { getUserTier } from "../../lib/subscriptions.js";
 import {
@@ -293,6 +293,7 @@ export default async function handler(req, res) {
     }
 
     let rawReply, tokensUsed;
+    let imageMarkerAllowed = true; // set per message below; read again after the AI call, outside the block that sets it
     let tierNote = null; // one-line explanation appended to the reply when Extra had to run on Max instead
     let extraUsedGemini = false;
     let maxUsedLarge = false; // a reply served by the costly Max model — counted against a trial's daily cap
@@ -349,6 +350,13 @@ export default async function handler(req, res) {
       // spending another search or another full grounding call. No DB
       // write happens on this path; the cache is only ever refreshed by an
       // actual search below.
+      // Flash's small model sometimes treats "build a simple website" as an image
+      // request, and each false positive burns one of a free user's monthly image
+      // generations — so on Flash the image instruction is only offered when the
+      // message plausibly asks for a picture. Other tiers judge for themselves.
+      imageMarkerAllowed = modelTier !== "flash" || plausiblyImageRequest(trimmedContent);
+      memoryOptions.allowImageMarker = imageMarkerAllowed;
+
       let searchOutcome = null;
       if (wantsSearch) {
         searchOutcome = await searchWeb(trimmedContent, historyForAi, memoryOptions, user.id);
@@ -402,7 +410,9 @@ export default async function handler(req, res) {
     // in exchange for not requiring the command at all.
     if (!hasAttachment) {
       const naturalImagePrompt = extractImageGenMarker(rawReply);
-      if (naturalImagePrompt) {
+      // Belt and braces: if the instruction wasn't offered for this message, a
+      // marker that shows up anyway is a misfire — never spend an image on it.
+      if (naturalImagePrompt && imageMarkerAllowed) {
         await generateAndSaveImage(res, chat, user.id, naturalImagePrompt);
         return;
       }

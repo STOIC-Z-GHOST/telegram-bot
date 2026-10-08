@@ -1003,6 +1003,60 @@
     display: block;
     margin-bottom: 6px;
   }
+  .bubble-attachment-image, .bubble-attachment-grid img { cursor: zoom-in; }
+  /* Full-screen image viewer: tap a picture in the chat to open it, tap it again
+     to zoom, Save to keep it. */
+  .lightbox { position: fixed; inset: 0; z-index: 500; background: rgba(0, 0, 0, 0.94); display: flex; flex-direction: column; }
+  .lightbox[hidden] { display: none; }
+  .lightbox-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: calc(12px + var(--tg-content-safe-top)) 16px 12px;
+    color: #fff;
+  }
+  .lightbox-count { font-size: 13px; opacity: 0.8; font-variant-numeric: tabular-nums; }
+  .lightbox-btn {
+    background: rgba(255, 255, 255, 0.16);
+    color: #fff;
+    border: none;
+    border-radius: 999px;
+    padding: 9px 16px;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .lightbox-stage { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; overflow: auto; -webkit-overflow-scrolling: touch; padding: 0 8px; }
+  .lightbox-stage img {
+    max-width: 100%;
+    max-height: 100%;
+    object-fit: contain;
+    border-radius: 6px;
+    cursor: zoom-in;
+    -webkit-touch-callout: default; /* lets iOS offer "Save to Photos" on press-and-hold */
+    user-select: none;
+  }
+  .lightbox-stage.zoomed { align-items: flex-start; justify-content: flex-start; }
+  .lightbox-stage.zoomed img { max-width: none; max-height: none; width: 200%; cursor: zoom-out; }
+  .lightbox-nav {
+    position: absolute;
+    top: 50%;
+    transform: translateY(-50%);
+    background: rgba(255, 255, 255, 0.16);
+    color: #fff;
+    border: none;
+    border-radius: 50%;
+    width: 40px;
+    height: 40px;
+    font-size: 24px;
+    line-height: 1;
+    cursor: pointer;
+  }
+  .lightbox-nav[hidden] { display: none; }
+  .lightbox-nav.prev { left: 8px; }
+  .lightbox-nav.next { right: 8px; }
+  .lightbox-hint { text-align: center; color: rgba(255, 255, 255, 0.6); font-size: 12px; padding: 8px 16px max(14px, env(safe-area-inset-bottom)); }
   .bubble-attachment-grid {
     display: grid;
     grid-template-columns: repeat(2, 1fr);
@@ -1468,6 +1522,18 @@
   <h2 class="tier-sheet-title">Your plan</h2>
   <p class="tier-sheet-subtitle" id="plan-sheet-subtitle"></p>
   <div id="plan-sheet-list" class="tier-sheet-list"></div>
+</div>
+
+<div id="lightbox" class="lightbox" hidden>
+  <div class="lightbox-bar">
+    <button type="button" class="lightbox-btn" id="lightbox-close">✕ Close</button>
+    <span class="lightbox-count" id="lightbox-count"></span>
+    <button type="button" class="lightbox-btn" id="lightbox-save">⬇ Save</button>
+  </div>
+  <div class="lightbox-stage" id="lightbox-stage"><img id="lightbox-img" alt="" /></div>
+  <button type="button" class="lightbox-nav prev" id="lightbox-prev" aria-label="Previous image" hidden>‹</button>
+  <button type="button" class="lightbox-nav next" id="lightbox-next" aria-label="Next image" hidden>›</button>
+  <div class="lightbox-hint">Tap the picture to zoom · Save keeps it on your phone</div>
 </div>
 
 <script type="module">
@@ -2046,6 +2112,85 @@
       }
     }
   });
+
+  // --- Image viewer (tap a picture in the chat) ---
+  const lightboxEl = document.getElementById("lightbox");
+  const lightboxStageEl = document.getElementById("lightbox-stage");
+  const lightboxImgEl = document.getElementById("lightbox-img");
+  const lightboxCountEl = document.getElementById("lightbox-count");
+  const lightboxPrevBtn = document.getElementById("lightbox-prev");
+  const lightboxNextBtn = document.getElementById("lightbox-next");
+  let lightboxImages = [];
+  let lightboxIndex = 0;
+
+  function showLightboxImage() {
+    const a = lightboxImages[lightboxIndex];
+    lightboxImgEl.src = a.url;
+    lightboxImgEl.alt = a.name || "";
+    lightboxStageEl.classList.remove("zoomed");
+    lightboxStageEl.scrollTo(0, 0);
+    const many = lightboxImages.length > 1;
+    lightboxCountEl.textContent = many ? `${lightboxIndex + 1} / ${lightboxImages.length}` : "";
+    lightboxPrevBtn.hidden = !many || lightboxIndex === 0;
+    lightboxNextBtn.hidden = !many || lightboxIndex === lightboxImages.length - 1;
+  }
+  function openLightbox(images, index) {
+    lightboxImages = images;
+    lightboxIndex = index;
+    showLightboxImage();
+    lightboxEl.hidden = false;
+    tg?.HapticFeedback?.impactOccurred?.("light");
+  }
+  function closeLightbox() {
+    lightboxEl.hidden = true;
+    lightboxImgEl.removeAttribute("src");
+  }
+  function lightboxFileName(a) {
+    const base = (a.name || "image").replace(/[^\w.\- ]+/g, "").trim() || "image";
+    return /\.(jpe?g|png|webp|gif)$/i.test(base) ? base : `${base}.jpg`;
+  }
+  // Three ways to save, best first. Telegram's own downloader is the one that
+  // actually works inside the app (a plain <a download> is ignored there for
+  // files on another domain); the fallbacks cover older Telegram versions and a
+  // regular browser.
+  async function saveLightboxImage() {
+    const a = lightboxImages[lightboxIndex];
+    const fileName = lightboxFileName(a);
+    if (tg?.downloadFile && tg.isVersionAtLeast?.("8.0")) {
+      try {
+        tg.downloadFile({ url: a.url, file_name: fileName }, (started) => {
+          if (started === false) showNotice("Download cancelled.");
+        });
+        return;
+      } catch (err) {
+        console.warn("tg.downloadFile failed, falling back:", err);
+      }
+    }
+    if (tg?.openLink) {
+      tg.openLink(a.url);
+      showNotice("Opened in your browser — press and hold the picture to save it.");
+      return;
+    }
+    try {
+      const blob = await (await fetch(a.url)).blob();
+      const link = document.createElement("a");
+      link.href = URL.createObjectURL(blob);
+      link.download = fileName;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(link.href), 10000);
+    } catch {
+      window.open(a.url, "_blank");
+    }
+  }
+  document.getElementById("lightbox-close").addEventListener("click", closeLightbox);
+  document.getElementById("lightbox-save").addEventListener("click", saveLightboxImage);
+  lightboxPrevBtn.addEventListener("click", () => { lightboxIndex -= 1; showLightboxImage(); });
+  lightboxNextBtn.addEventListener("click", () => { lightboxIndex += 1; showLightboxImage(); });
+  lightboxImgEl.addEventListener("click", () => lightboxStageEl.classList.toggle("zoomed"));
+  lightboxStageEl.addEventListener("click", (e) => { if (e.target === lightboxStageEl) closeLightbox(); }); // tap the dark area to close
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !lightboxEl.hidden) closeLightbox(); });
 
   // --- Standalone web search tab ---
   function renderSearchEmptyState() {
@@ -2767,16 +2912,18 @@
       img.className = "bubble-attachment-image";
       img.src = images[0].url;
       img.alt = images[0].name || "";
+      img.addEventListener("click", () => openLightbox(images, 0));
       body.appendChild(img);
     } else if (images.length > 1) {
       const grid = document.createElement("div");
       grid.className = "bubble-attachment-grid";
-      for (const a of images) {
+      images.forEach((a, i) => {
         const img = document.createElement("img");
         img.src = a.url;
         img.alt = a.name || "";
+        img.addEventListener("click", () => openLightbox(images, i));
         grid.appendChild(img);
-      }
+      });
       body.appendChild(grid);
     }
 
