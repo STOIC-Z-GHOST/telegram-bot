@@ -185,8 +185,12 @@ then `pdftoppm -png`.
 
 - WOFF2 fonts through fontkit + subsetting produced garbled PDF glyphs; embed plain **WOFF**.
 - Pollinations' default model/size is poor (`sana` 768); its errors are huge JSON — log, never show.
-- Groq free: gpt-oss-120b 8K tokens/min & 200K/day, llama-8b 6K/min & 500K/day — the per-minute
-  limit is the real ceiling; the chain exists to spill over.
+- Groq free (Oct 2026 tracker): gpt-oss-120b, gpt-oss-20b and Qwen3.8 27B each get 30 req/min, 1,000/day,
+  8,000 tokens/min, 200,000 tokens/day — the per-minute limit is the real ceiling; the chain exists to spill over.
+- **Free/hosted model ids churn.** The first real `/health live` (10 Oct 2026) found: Groq's llama-3.1-8b-instant
+  shut down (16 Aug), OpenRouter's gpt-oss-120b:free and qwen2.5-vl:free withdrawn. Ids that change are now env vars
+  (`GROQ_FLASH_MODEL`, `OPENROUTER_MODEL`, `OPENROUTER_VISION_MODEL`, plus the CF_*/MISTRAL_* ones); OpenRouter ids must end
+  in `:free` or are ignored (a non-free id would bill). Run `/health` after any provider announcement.
 - A model asked to flag image requests on every message misfires on small models — use
   keyword gates + explicit commands.
 - Rolling windows: "resets at 12" is just messages sent ~24h earlier aging out.
@@ -239,3 +243,17 @@ provider type with a non-OpenAI-style API needs its own function in `lib/health.
 `/health live` is the real test (e.g. Cloudflare's token-verify/model-search endpoints, ModelScope/Z.ai `/models`
 may behave differently than expected; those cases degrade to a ⚠️, never a false ✅).
 Missing `VERCEL_ENV` is harmless: the webhook-secret rule also checks `NODE_ENV`.
+
+### First real `/health live` run — what it found and what changed (10 Oct 2026)
+Real problems fixed in the app: Groq fast model -> `openai/gpt-oss-20b` (reasoning_effort pinned to `low`); OpenRouter text/vision
+-> Gemma 4 31B/26B `:free`; `cleanModelText()` in `lib/ai.js` strips gpt-oss control tokens (Cloudflare returned the literal text
+`<|start|>assistant`) and treats an empty result as "no text" so the chain falls through.
+Checker bugs fixed (it was too strict / too trusting): a Cloudflare catalog-search miss is now a warning (the 8B model still answered
+live — probably deprecated); a model missing from a provider's list is re-checked at its own address before being called gone;
+providers with a PUBLIC model list (ModelScope, Z.ai) are no longer shown as "key accepted" — only a live answer proves the key;
+401/403 now show the provider's own message; live results are merged into the model's line; "Available now, for example: …"
+suggestions for retired models; a "Needs attention" list at the end.
+Still open (needs the owner): `TELEGRAM_BOT_USERNAME` didn't match the bot behind the token (invite links would point to the
+wrong bot); ModelScope key returned 401; Mistral `mistral-large-2512` unverified (retest with the new check); SearXNG needs
+`json` enabled in `search.formats`.
+

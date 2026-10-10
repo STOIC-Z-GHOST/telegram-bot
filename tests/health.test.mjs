@@ -34,6 +34,7 @@ const J = (obj, status = 200) => new Response(JSON.stringify(obj), { status, hea
 // ---- a fake internet where everything works; tests override single routes
 const hostIds = (host) => catalog.openAiCompatible.filter((r) => new URL(r.baseUrl || "https://none.invalid").hostname === host).map((r) => r.model);
 const cfNames = catalog.openAiCompatible.filter((r) => r.baseUrl.includes("cloudflare")).map((r) => r.model).concat("@cf/black-forest-labs/flux-1-schnell");
+const PUBLIC_LIST_HOSTS = new Set(["api-inference.modelscope.cn", "api.z.ai"]); // their model lists need no key
 let calls;
 function makeFetch(overrides = {}) {
   calls = [];
@@ -53,7 +54,19 @@ function makeFetch(overrides = {}) {
     if (url.includes("api.cloudflare.com") && url.includes("/tokens/verify")) return J({ success: false }, 403);
     if (url.includes("api.cloudflare.com") && url.includes("/ai/models/search")) return J({ result: cfNames.map((name) => ({ name })) });
     if (url.endsWith("/chat/completions")) return J({ choices: [{ message: { content: "OK" } }] });
-    if (url.endsWith("/models")) { const host = new URL(url).hostname; const ids = hostIds(host); if (host === "api.groq.com") ids.push("whisper-large-v3-turbo"); return J({ data: ids.map((id) => ({ id })) }); }
+    {
+      const u = new URL(url);
+      const idsFor = (host) => { const ids = hostIds(host); if (host === "api.groq.com") ids.push("whisper-large-v3-turbo"); return ids; };
+      if (/\/models$/.test(u.pathname)) {
+        const authed = !!(opts.headers && opts.headers.Authorization);
+        if (!authed && !PUBLIC_LIST_HOSTS.has(u.hostname)) return J({ error: { message: "Missing API key" } }, 401);
+        return J({ data: idsFor(u.hostname).map((id) => ({ id })) });
+      }
+      if (/\/models\/.+/.test(u.pathname) && method === "GET") {
+        const id = decodeURIComponent(u.pathname.split("/models/")[1]);
+        return idsFor(u.hostname).includes(id) ? J({ id }) : J({ error: { message: `The model \`${id}\` does not exist` } }, 404);
+      }
+    }
     return J({ error: "unexpected url in test: " + url }, 500);
   };
 }
@@ -71,7 +84,11 @@ globalThis.fetch = makeFetch();
 let res = await run();
 let c = summarize(res);
 check("all good: no problems", c.fail === 0, JSON.stringify(c));
-check("all good: Groq key + every model line ok", find(res, "Groq", "openai/gpt-oss-120b")?.status === "ok" && find(res, "Groq", "llama-3.1-8b-instant")?.status === "ok" && find(res, "Groq", "whisper")?.status === "ok");
+check("all good: Groq key + every model line ok", find(res, "Groq", "openai/gpt-oss-120b")?.status === "ok" && find(res, "Groq", "openai/gpt-oss-20b")?.status === "ok" && find(res, "Groq", "whisper")?.status === "ok");
+check("fast mode now uses Groq's gpt-oss-20b (llama-3.1-8b-instant was shut down)", !res.some((r) => r.name === "llama-3.1-8b-instant") && !!find(res, "Groq", "openai/gpt-oss-20b"));
+check("OpenRouter now checks free models that exist", find(res, "OpenRouter", "gemma-4-31b-it:free")?.status === "ok" && find(res, "OpenRouter", "gemma-4-26b-a4b-it:free")?.status === "ok");
+check("public-list providers are NOT reported as key-verified in quick mode", find(res, "ModelScope", "API key")?.status === "warn" && /public/.test(find(res, "ModelScope", "API key").detail) && find(res, "Z.ai", "API key")?.status === "warn");
+check("authenticated-list providers ARE key-verified", find(res, "Groq", "API key")?.status === "ok" && find(res, "Mistral", "API key")?.status === "ok");
 check("all good: all 6 Gemini ids checked", res.filter((r) => r.group === "Gemini").length === 6);
 check("all good: Cloudflare token + image model", find(res, "Cloudflare Workers AI", "API token")?.status === "ok" && find(res, "Cloudflare Workers AI", "flux-1-schnell")?.status === "ok");
 check("all good: telegram + webhook + db + blob", find(res, "Telegram", "Bot token")?.status === "ok" && find(res, "Telegram", "Webhook")?.status === "ok" && find(res, "Database", "Neon")?.status === "ok" && find(res, "Storage", "Blob")?.status === "ok");
@@ -82,7 +99,8 @@ check("quick mode: Gemini key sent in a header, not the URL", calls.filter((x) =
 const text = formatReport(res);
 const leaks = Object.entries(KEYS).filter(([k, v]) => /KEY|TOKEN|SECRET|DATABASE/.test(k) && text.includes(v));
 check("report contains no secret values", leaks.length === 0, leaks.map(([k]) => k).join());
-check("report summary + tailored hint", /Everything checked is connected/.test(text) && /\/health live/.test(text));
+check("report summary + tailored hint", /Working, with warnings|Everything checked is connected/.test(text) && /\/health live/.test(text));
+check("CLI report names its own live command", /npm run check:live/.test(formatReport(res, { liveHint: "Run `npm run check:live`" })));
 
 // ===== 3. a rejected key =====
 globalThis.fetch = makeFetch({ "api.groq.com/openai/v1/models": () => J({ error: { message: "Invalid API Key gsk_FAKE_GROQ_KEY_000111" } }, 401) });
@@ -93,11 +111,13 @@ check("provider message echoing a key is scrubbed", !dump(res).includes("gsk_FAK
 
 // ===== 4. retired / mistyped model =====
 globalThis.fetch = makeFetch({
-  "api.mistral.ai/v1/models": () => J({ data: [{ id: "mistral-small-2603" }, { id: "ministral-8b-2512" }, { id: "mistral-large-2512" }] }),
+  "api.mistral.ai/v1/models/ministral-14b-2512": () => J({ error: { message: "Invalid model" } }, 404),
+  "api.mistral.ai/v1/models": (u) => (u.endsWith("/models") ? J({ data: [{ id: "mistral-small-2603" }, { id: "ministral-8b-2512" }, { id: "mistral-large-2512" }] }) : null),
 });
 res = await run();
 const gone = find(res, "Mistral", "ministral-14b-2512");
-check("model missing from list -> fail naming the model", gone?.status === "fail" && /retired or mistyped/.test(gone.detail), gone?.detail);
+check("model missing from list AND from its own address -> fail naming the model", gone?.status === "fail" && /retired or mistyped/.test(gone.detail), gone?.detail);
+check("...and suggests what IS available", /Available now, for example: .*ministral-8b-2512/.test(gone.detail), gone?.detail);
 check("other Mistral models still ok", find(res, "Mistral", "mistral-small-2603")?.status === "ok");
 
 // ===== 5. Gemini ids =====
@@ -169,23 +189,24 @@ res = await run();
 check("bad Cloudflare token -> fail, models skipped", find(res, "Cloudflare Workers AI", "API token")?.status === "fail" && !res.some((r) => r.group === "Cloudflare Workers AI" && r.name.startsWith("@cf")));
 globalThis.fetch = makeFetch({ "/ai/models/search": () => J({ result: [{ name: "@cf/some/other-model" }] }) });
 res = await run();
-check("retired Cloudflare model -> fail", find(res, "Cloudflare Workers AI", "flux-1-schnell")?.status === "fail" && /not in Cloudflare's catalog/.test(find(res, "Cloudflare Workers AI", "flux-1-schnell").detail));
+check("Cloudflare model absent from the catalog search -> warn (search can miss), not fail", find(res, "Cloudflare Workers AI", "flux-1-schnell")?.status === "warn" && /live test/.test(find(res, "Cloudflare Workers AI", "flux-1-schnell").detail));
 
 // ===== 11. live mode =====
 globalThis.fetch = makeFetch();
 res = await run({ live: true });
 const posts = calls.filter((x) => x.method === "POST");
-check("live: Groq's two chat models answer", res.filter((r) => r.group === "Groq" && r.name.endsWith("— live") && r.status === "ok").length === 2);
+check("live: Groq's two chat models answer (merged into their model lines)", res.filter((r) => r.group === "Groq" && /answered in/.test(r.detail) && r.status === "ok").length === 2);
+check("live: no separate '— live' lines any more", !res.some((r) => r.name.endsWith("— live")));
 check("live: Gemini live test uses ONLY the roomy lite model", posts.filter((p) => p.url.includes("generateContent")).length === 1 && posts.find((p) => p.url.includes("generateContent")).url.includes("gemini-3.5-flash-lite"), posts.filter((p) => p.url.includes("generateContent")).map((p) => p.url.split("/models/")[1]).join());
 check("live: never calls the 20/day primary Gemini model", !posts.some((p) => p.url.includes("gemini-3.6-flash")));
-check("live: Mistral tests only the cheapest model", posts.filter((p) => p.url.includes("api.mistral.ai")).length === 1);
+check("live: Mistral tests all four models (well under a cent)", posts.filter((p) => p.url.includes("api.mistral.ai")).length === 4);
 check("live: OpenRouter spends exactly 1 of its 50/day", posts.filter((p) => p.url.includes("openrouter.ai")).length === 1);
-check("live: Cloudflare text + flash + vision answer", res.filter((r) => r.group === "Cloudflare Workers AI" && r.name.endsWith("— live") && r.status === "ok").length === 3);
+check("live: Cloudflare text + flash + vision answer", res.filter((r) => r.group === "Cloudflare Workers AI" && /answered in/.test(r.detail) && r.status === "ok").length === 3);
 check("live: no image is generated (no CF /ai/run call)", !posts.some((p) => /\/ai\/run\//.test(p.url)));
 check("live report says so", /each model was asked/.test(formatReport(res, { live: true })));
 globalThis.fetch = makeFetch({ "api.groq.com/openai/v1/chat/completions": () => J({ error: { message: "rate limit reached" } }, 429) });
 res = await run({ live: true });
-check("live 429 -> warn", res.some((r) => r.group === "Groq" && r.name.endsWith("— live") && r.status === "warn" && /rate-limited/.test(r.detail)));
+check("live 429 -> warn", res.some((r) => r.group === "Groq" && r.name.startsWith("openai/gpt-oss") && r.status === "warn" && /rate-limited/.test(r.detail)));
 
 // ===== 12. SearXNG / Tavily =====
 const withSearch = { ...process.env, SEARXNG_URL: "https://s.example.org/", TAVILY_API_KEY: "tvly-FAKE_000111222" };
@@ -203,13 +224,92 @@ check("no search configured -> explains the fallback", find(res, "Search", "Web 
 res = await run({}, { dbTables: () => { throw new TypeError("kaboom"); } });
 check("one crashing check is contained", find(res, "Database", "Neon")?.status === "fail" && find(res, "Gemini", "gemini-3.6-flash"));
 
+
+// ===== 13b. regressions from the first real /health live run =====
+const hostModels = (host) => catalog.openAiCompatible.filter((r) => new URL(r.baseUrl || "https://none.invalid").hostname === host).map((r) => r.model);
+const groqFlash = catalog.openAiCompatible.find((r) => r.tier === "flash" && /groq/.test(r.baseUrl)).model;
+
+// Groq retires a model: gone from the list, from its own address, and chat returns 404
+globalThis.fetch = makeFetch({
+  [`api.groq.com/openai/v1/models/${groqFlash}`]: () => J({ error: { message: `The model \`${groqFlash}\` does not exist or you do not have access to it.` } }, 404),
+  "api.groq.com/openai/v1/models": (u) => (u.endsWith("/models") ? J({ data: [{ id: "openai/gpt-oss-120b" }, { id: "qwen/qwen3.6-27b" }, { id: "whisper-large-v3-turbo" }, { id: "meta-llama/llama-guard-4-12b" }] }) : null),
+  "api.groq.com/openai/v1/chat/completions": (u, o) => (JSON.parse(o.body).model === groqFlash ? J({ error: { message: `The model \`${groqFlash}\` does not exist or you do not have access to it.` } }, 404) : null),
+});
+res = await run({ live: true });
+const goneGroq = find(res, "Groq", groqFlash);
+check("retired Groq model (live): ONE line, fail, says it doesn't exist", res.filter((r) => r.name === groqFlash).length === 1 && goneGroq?.status === "fail" && /doesn't exist/.test(goneGroq.detail), goneGroq?.detail);
+check("...with a 'did you mean' that skips audio/guard models", /Available now, for example: .*qwen\/qwen3\.6-27b/.test(goneGroq.detail) && !/llama-guard/.test(goneGroq.detail) && !/whisper/.test(goneGroq.detail), goneGroq?.detail);
+
+// Cloudflare: gone from the catalog search but it still answers -> deprecated warning, not a failure
+const cf8b = catalog.openAiCompatible.find((r) => r.tier === "flash" && /cloudflare/.test(r.baseUrl)).model;
+globalThis.fetch = makeFetch({ "/ai/models/search": () => J({ result: cfNames.filter((n) => n !== cf8b).map((name) => ({ name })) }) });
+res = await run({ live: true });
+const dep = find(res, "Cloudflare Workers AI", cf8b);
+check("CF model missing from catalog but answering live -> warn 'probably deprecated'", dep?.status === "warn" && /still answers/.test(dep.detail) && /deprecated/.test(dep.detail), dep?.detail);
+check("(that is the 8B model from the first real run)", /llama-3\.1-8b/.test(cf8b));
+
+// ModelScope-style: public list, key actually rejected -> quick says "unverified", live says rejected WITH the provider's message
+const msChat = (u, o) => (u.endsWith("/chat/completions") ? J({ error: { message: "Invalid token. Please bind your Alibaba Cloud account." } }, 401) : null);
+globalThis.fetch = makeFetch({ "api-inference.modelscope.cn": msChat });
+res = await run();
+check("ModelScope quick: key NOT reported as valid", find(res, "ModelScope", "API key")?.status === "warn");
+res = await run({ live: true });
+const msKey = find(res, "ModelScope", "API key");
+check("ModelScope live: key fail, with the provider's own message", msKey?.status === "fail" && /key rejected \(HTTP 401\).*Alibaba Cloud/.test(msKey.detail), msKey?.detail);
+check("...and the model line carries the failure too", find(res, "ModelScope", "Qwen/")?.status === "fail");
+
+// Z.ai-style: partial public list (model absent) but it answers -> ok, noted; quick -> warn only
+globalThis.fetch = makeFetch({ "api.z.ai": (u, o) => (/\/models$/.test(u) ? J({ data: [{ id: "glm-4.5" }] }) : /\/models\/.+/.test(u) ? J({ error: { message: "not found" } }, 404) : null) });
+res = await run();
+const zq = res.find((r) => r.group === "Z.ai" && r.name === "glm-4.6v-flash");
+check("Z.ai quick: absent from a public list -> warn (list may be incomplete)", zq?.status === "warn" && /incomplete/.test(zq.detail), zq?.detail);
+res = await run({ live: true });
+const zl = res.find((r) => r.group === "Z.ai" && r.name === "glm-4.6v-flash");
+check("Z.ai live: it answers -> ok, noting the list gap", zl?.status === "ok" && /missing from the provider's list, but it works/.test(zl.detail), zl?.detail);
+check("Z.ai live: the key is then proved by the answer", find(res, "Z.ai", "API key")?.status === "ok");
+
+// Mistral: id not in the list but its own address works (aliases) -> ok
+globalThis.fetch = makeFetch({ "api.mistral.ai/v1/models": (u) => (u.endsWith("/models") ? J({ data: [{ id: "mistral-small-2603" }] }) : null) });
+res = await run();
+check("Mistral: not in list but retrievable by id -> ok (aliases / access rules)", find(res, "Mistral", "mistral-large-2512")?.status === "ok");
+
+// OpenRouter: the free model is withdrawn ("unavailable for free")
+const orText = catalog.openAiCompatible.find((r) => r.tier === "standard" && /openrouter/.test(r.baseUrl)).model;
+globalThis.fetch = makeFetch({
+  "openrouter.ai/api/v1/models": () => J({ data: [{ id: "google/gemma-4-26b-a4b-it:free" }, { id: "nvidia/nemotron-3-super-120b-a12b:free" }] }),
+  "openrouter.ai/api/v1/chat/completions": () => J({ error: { message: "This model is unavailable for free. The paid version is available now - use this slug instead" } }, 404),
+});
+res = await run({ live: true });
+const orGone = find(res, "OpenRouter", orText);
+check("OpenRouter free model withdrawn -> ONE fail line, suggests current free ones", orGone?.status === "fail" && /nemotron-3-super/.test(orGone.detail), orGone?.detail);
+
+// Reasoning-model oddities seen live: control tokens / empty text
+const cfStd = catalog.openAiCompatible.find((r) => r.tier === "standard" && /cloudflare/.test(r.baseUrl)).model;
+const chatReply = (content) => (u, o) => (u.includes("api.cloudflare.com") && u.endsWith("/chat/completions") && JSON.parse(o.body).model === cfStd ? J({ choices: [{ message: { content } }] }) : null);
+globalThis.fetch = makeFetch({ "api.cloudflare.com": chatReply("<|start|>assistant") });
+res = await run({ live: true });
+check("reply that is ONLY control tokens (<|start|>assistant) -> warn, not a green tick", find(res, "Cloudflare Workers AI", cfStd)?.status === "warn" && /control tokens/.test(find(res, "Cloudflare Workers AI", cfStd).detail), find(res, "Cloudflare Workers AI", cfStd)?.detail);
+globalThis.fetch = makeFetch({ "api.cloudflare.com": chatReply("<|channel|>final<|message|>OK") });
+res = await run({ live: true });
+check("control tokens around real text -> warn that the bot strips them", find(res, "Cloudflare Workers AI", cfStd)?.status === "warn" && /bot strips/.test(find(res, "Cloudflare Workers AI", cfStd).detail));
+globalThis.fetch = makeFetch({ "api.cloudflare.com": chatReply("") });
+res = await run({ live: true });
+check("empty reply -> warn (reasoning model used the small budget)", find(res, "Cloudflare Workers AI", cfStd)?.status === "warn" && /no text/.test(find(res, "Cloudflare Workers AI", cfStd).detail));
+
+// The report ends with a short "Needs attention" list
+globalThis.fetch = makeFetch({ "getMe": () => J({ ok: false }, 401) });
+res = await run();
+const att = formatReport(res);
+check("'Needs attention' lists failures first", /Needs attention\n❌ Telegram: Bot token/.test(att), att.slice(att.indexOf("Needs attention"), att.indexOf("Needs attention") + 120));
+globalThis.fetch = makeFetch();
+
 // ===== 14. formatting =====
 globalThis.fetch = makeFetch();
 const big = formatReport(await run({ live: true }), { live: true });
 const parts = splitReport(big, 1500);
 check("splitReport: every part under the limit", parts.every((p) => p.length <= 1500), parts.map((p) => p.length).join());
 check("splitReport: nothing lost", parts.join("\n\n") === big);
-check("full live report fits in a few Telegram messages", splitReport(big).length <= 3, `${big.length} chars -> ${splitReport(big).length} message(s)`);
+check("full live report fits in a few Telegram messages", splitReport(big).length <= 4, `${big.length} chars -> ${splitReport(big).length} message(s)`);
 check("redactor ignores short/non-secret values", makeRedactor({ BOT_NAME: "Assist AI", X_KEY: "short" })("Assist AI short") === "Assist AI short");
 
 globalThis.fetch = realFetch;

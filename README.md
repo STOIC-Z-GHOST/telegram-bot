@@ -298,7 +298,7 @@ The pill under the message box picks the model for the next replies:
 
 | Tier | Model | Who |
 |---|---|---|
-| ⚡ Flash | Llama 3.1 8B on Groq — fastest | Everyone |
+| ⚡ Flash | gpt-oss-20B on Groq (low reasoning) — fastest | Everyone |
 | Standard | `gpt-oss-120b` on Groq, then the fallback chain | Everyone |
 | Max | Mistral Large | Pro and Premium |
 | 💎 Extra | Gemini 3.8 → 3.7 → 3.5 → 3 Flash, then Max's model | Premium |
@@ -476,13 +476,13 @@ Billing/Usage page (a dollar credit balance means the $10 rule applies).
 
 Chains (first available wins, then the next):
 
-- **Standard:** Groq gpt-oss-120b -> Cerebras (if keyed) -> Cloudflare gpt-oss-120b -> OpenRouter -> Ministral 14B -> Mistral Small -> Gemini
-- **Flash:** Groq llama-3.1-8b -> Cloudflare llama-3.1-8b -> Ministral 8B -> Standard chain
+- **Standard:** Groq gpt-oss-120b -> Cerebras (if keyed) -> Cloudflare gpt-oss-120b -> OpenRouter (Gemma 4 31B free) -> Ministral 14B -> Mistral Small -> Gemini
+- **Flash:** Groq gpt-oss-20b (llama-3.1-8b-instant was shut down 16 Aug 2026) -> Cloudflare llama-3.1-8b -> Ministral 8B -> Standard chain
 - **Max:** Mistral Large 3 (pinned `mistral-large-2512`) -> Standard chain
 - **Extra:** four Gemini Flash models -> Max -> Standard chain
 - **Think mode** skips Cloudflare (reasoning tokens bill as output and drain the shared pool)
 - **Image generation:** Cloudflare FLUX.1 [schnell] -> Pollinations Flux 1024 -> Pollinations defaults
-- **Image questions:** Gemini -> Gemini Flash-Lite -> Cloudflare Gemma 4 -> OpenRouter Qwen-VL -> ModelScope -> Z.ai (Pixtral was retired by Mistral and removed)
+- **Image questions:** Gemini -> Gemini Flash-Lite -> Cloudflare Gemma 4 -> OpenRouter (Gemma 4 26B free) -> ModelScope -> Z.ai (Pixtral was retired by Mistral and removed)
 
 Cloudflare needs **both** `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN`
 (a token with Workers AI permission); with either missing it is skipped.
