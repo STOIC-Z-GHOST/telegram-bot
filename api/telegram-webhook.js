@@ -34,6 +34,7 @@
 //   /start           intro message
 //   /image <prompt>  generates an image via Pollinations.ai (also /img)
 //   /users           (owner only) lists approved users with a Remove button
+//   /health [live]   (owner only) checks every key + model id; "live" makes each model answer once
 //   /upgrade         shows current plan + Pro/Premium options (Telegram Stars,
 //                     billed monthly, auto-renewing)
 //   /invite          shows your referral link/code, credited invites, and
@@ -70,7 +71,13 @@ import {
   removeUser,
   listApprovedUsers,
 } from "../lib/access.js";
-import { checkMessageLimit, recordMessageUsage, checkImageGenLimit, recordImageUsage, checkThinkingLimit, recordThinkingUsage, TIER_LIMITS, limitsFor, checkFileTypeAllowed, checkVoiceLimit, recordVoiceUsage } from "../lib/limits.js";
+import { checkMessageLimit, recordMessageUsage, checkImageGenLimit, recordImageUsage, checkThinkingLimit, recordThinkingUsage, TIER_LIMITS, limitsFor, checkFileTypeAllowed, checkVoiceLimit, recordVoiceUsage, checkFileGenLimit, recordFileGenUsage, releaseFileGenSlot } from "../lib/limits.js";
+import { detectFileRequest } from "../lib/fileGen/detect.js";
+import crypto from "crypto";
+import { createFile, FileGenError, asciiSlug } from "../lib/fileGen/index.js";
+import { detectEditRequest } from "../lib/fileGen/editDetect.js";
+import { editFile } from "../lib/fileGen/edit/index.js";
+import { runHealthCheck, formatReport, splitReport } from "../lib/health.js";
 import { classifyFile, ALL_FILES_SUMMARY } from "../lib/fileTypes.js";
 import { extractDocumentText, buildDocumentPrompt } from "../lib/attachments.js";
 import { transcribeAudio } from "../lib/transcribe.js";
@@ -89,7 +96,7 @@ import {
 } from "../lib/referrals.js";
 import { channelUsername, channelJoinRow } from "../lib/channel.js";
 import { identityRules } from "../lib/identity.js";
-import { brandImage } from "../lib/brandImage.js";
+import { generateImage, friendlyImageError } from "../lib/imagegen.js";
 
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
@@ -151,7 +158,8 @@ const SYSTEM_PROMPT =
   ) +
   "If asked what commands or features this bot has: the complete, real list is " +
   "/start, /think <question> (slower, more thorough answer), " +
-  "/image <description> or /img <description> (AI image generation), /invite " +
+  "/image <description> or /img <description> (AI image generation), " +
+  "/file <html, docx, pdf, md or txt> <what to make> (creates a downloadable file), /invite " +
   "(referral link), /upgrade, and /plans — nothing else. Never " +
   "invent or describe a command outside this exact list (no /weather, /remind, " +
   "/todo, /news, /poll, or anything else that sounds plausible but isn't real) " +
@@ -260,12 +268,9 @@ async function fetchAsBase64(url) {
 // key or billing. Rate-limited to roughly 1 request per 15 seconds for
 // anonymous use, which is plenty for a single-person bot.
 async function askPollinationsImage(prompt) {
-  const url = `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}`;
-  const resp = await fetchWithTimeout(url, {}, 30000); // image generation takes longer than text
-  if (!resp.ok) throw new Error(`Pollinations error ${resp.status}: ${await resp.text()}`);
-  const mimeType = resp.headers.get("content-type") || "image/jpeg";
-  const arrayBuffer = await resp.arrayBuffer();
-  return brandImage(Buffer.from(arrayBuffer), mimeType); // Assist AI badge, bottom-left
+  // Same path as the mini app (Flux at 1024, then the defaults, then the Assist AI
+  // badge) — see generateImage in lib/imagegen.js.
+  return generateImage(prompt);
 }
 
 async function askGroq(prompt, { thinking = false } = {}) {
@@ -404,7 +409,7 @@ async function sendStartMessage(chatId) {
   const body = {
     chat_id: chatId,
     text:
-      "I'm online — ask me anything, use /image <description> for pictures, " +
+      "I'm online — ask me anything, use /image <description> for pictures, /file pdf <topic> for a document, " +
       "send me a photo and I'll analyze it, or send a voice note and I'll answer it. " +
       "I can read PDFs, Word and text files too (Excel, PowerPoint and code files on Pro). " +
       "Try /think <question> for a slower, more thorough answer " +
@@ -582,6 +587,7 @@ async function buildPlanComparisonText() {
     row("Images/mo", free.imageGenPerMonth, pro.imageGenPerMonth, "Unlimited"),
     row("Voice/day", `${free.voicePerDay}/${free.voiceSecondsPerDay / 60}m`, `${pro.voicePerDay}/${pro.voiceSecondsPerDay / 60}m`, `${premium.voicePerDay}/${premium.voiceSecondsPerDay / 60}m`),
     row("Xlsx/pptx", "—", "✓", "✓"),
+    row("Make files", `${free.filesPerDay}/day`, `${pro.filesPerDay}/day`, `${premium.filesPerDay}/day`),
   ];
 
   return `<pre>${lines.join("\n")}</pre>\n\nVoice/day = clips / minutes of audio. Models: you pick one in the mini app (Free: Flash + Standard, Pro adds Max, Premium adds Extra). Imgs/msg is a mini-app feature, and free numbers don't include your /invite bonus.\n\n🎬 Video generation — coming soon for paid tiers.`;
@@ -653,6 +659,24 @@ async function handleSuccessfulPayment(chatId, payment) {
   );
 }
 
+// Sends a generated file as a Telegram document. A non-ASCII file name (an Amharic
+// title) is swapped for a plain one in the multipart header, which clients render
+// reliably; the full name is kept in the caption.
+async function sendTelegramDocument(chatId, buffer, fileName, mimeType, caption) {
+  const dot = fileName.lastIndexOf(".");
+  const ext = dot >= 0 ? fileName.slice(dot + 1) : "bin";
+  const safeName = /^[\x20-\x7e]+$/.test(fileName) ? fileName : `${asciiSlug(fileName.slice(0, dot >= 0 ? dot : undefined))}.${ext}`;
+  const form = new FormData();
+  form.append("chat_id", String(chatId));
+  if (caption) form.append("caption", caption.slice(0, 1024));
+  form.append("document", new Blob([buffer], { type: mimeType }), safeName);
+  const resp = await fetchWithTimeout(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendDocument`, {
+    method: "POST",
+    body: form,
+  }, 30000);
+  if (!resp.ok) throw new Error(`sendDocument failed: ${resp.status} ${(await resp.text()).slice(0, 200)}`);
+}
+
 async function sendTelegramPhoto(chatId, imageBuffer, mimeType, caption) {
   const ext = mimeType.includes("png") ? "png" : "jpg";
   const form = new FormData();
@@ -665,6 +689,66 @@ async function sendTelegramPhoto(chatId, imageBuffer, mimeType, caption) {
   }, 20000);
 }
 
+// Edits a document the person sent (Phases 2 and 3 — lib/fileGen/edit/) and sends the
+// edited copy back. Returns true if it dealt with the message, false if the caller
+// should read the file the normal way instead (only for a natural-language guess that
+// is over its file allowance — an explicit "/file edit" always gets an answer).
+// Counts as one file, one message and its tokens, like creating a file.
+async function handleDmEdit(chatId, doc, fileName, mimeType, editRequest) {
+  const messageCheck = await checkMessageLimit(chatId);
+  if (!messageCheck.allowed) {
+    await sendTelegramMessage(chatId, messageCheck.reason);
+    return true;
+  }
+  const typeCheck = await checkFileTypeAllowed(chatId, fileName, mimeType);
+  if (!typeCheck.allowed) {
+    await sendTelegramMessage(chatId, typeCheck.reason);
+    return true;
+  }
+  // Last check, because a pass claims the "one file at a time" slot — nothing below may
+  // return before it is released.
+  const fileCheck = await checkFileGenLimit(chatId);
+  if (!fileCheck.allowed) {
+    if (!editRequest.explicit) return false;
+    await sendTelegramMessage(chatId, fileCheck.reason);
+    return true;
+  }
+  sendTypingAction(chatId);
+  let tokensUsed = null;
+  try {
+    const fileUrl = await getTelegramFileUrl(doc.file_id);
+    const resp = await fetchWithTimeout(fileUrl, {}, 15000);
+    if (!resp.ok) throw new FileGenError("I couldn't download that file — please try sending it again.", { retryable: false });
+    const buffer = Buffer.from(await resp.arrayBuffer());
+    const out = await editFile({ buffer, name: fileName, mime: mimeType, instruction: editRequest.instruction });
+    tokensUsed = out.tokensUsed;
+    await sendTelegramDocument(chatId, out.buffer, out.displayName, out.mime, [`✏️ ${out.displayName}`, ...out.notes].join("\n"));
+    await recordFileGenUsage(chatId); // only a delivered file spends file allowance
+  } catch (err) {
+    if (err instanceof FileGenError) {
+      tokensUsed = err.tokensUsed;
+      await sendTelegramMessage(chatId, `⚠️ ${err.userMessage}`);
+    } else {
+      console.error("DM file edit failed:", err);
+      await sendTelegramMessage(chatId, "⚠️ I couldn't edit that file — please try again in a minute. This didn't use any of your file allowance.");
+    }
+  }
+  try {
+    await recordMessageUsage(chatId, tokensUsed);
+  } finally {
+    await releaseFileGenSlot(chatId);
+  }
+  return true;
+}
+
+// Constant-time comparison (hashing first so the length of the secret doesn't leak either).
+function secretMatches(sent, expected) {
+  if (typeof sent !== "string") return false;
+  const a = crypto.createHash("sha256").update(sent).digest();
+  const b = crypto.createHash("sha256").update(expected).digest();
+  return crypto.timingSafeEqual(a, b);
+}
+
 export default async function handler(req, res) {
   // Anything that isn't Telegram POSTing an update (e.g. you opening the
   // URL in a browser) just gets a plain 200 so it doesn't look broken.
@@ -675,7 +759,22 @@ export default async function handler(req, res) {
 
   // Confirms the request actually came from Telegram and not a stranger
   // who found this URL and started POSTing fake updates to it.
-  if (WEBHOOK_SECRET && req.headers["x-telegram-bot-api-secret-token"] !== WEBHOOK_SECRET) {
+  // Without a secret this check used to switch itself off, which would let anyone who
+  // finds the URL send fake updates — including ones that look like they come from the
+  // owner. So in production a missing secret now refuses everything (loudly, in the
+  // logs) rather than quietly allowing everything. Set TELEGRAM_WEBHOOK_SECRET in
+  // Vercel and pass the same value as secret_token to setWebhook (README step 2).
+  if (!WEBHOOK_SECRET) {
+    // VERCEL_ENV is a Vercel system variable; if the project doesn't expose those it is
+    // undefined, so NODE_ENV (which Vercel always sets to "production" on deployments)
+    // counts too — otherwise this protection would silently not apply.
+    const vercelEnv = process.env.VERCEL_ENV;
+    if (vercelEnv === "production" || (vercelEnv === undefined && process.env.NODE_ENV === "production")) {
+      console.error("TELEGRAM_WEBHOOK_SECRET is not set — refusing webhook calls. Set it and re-run setWebhook with secret_token.");
+      res.status(503).send("Webhook secret not configured");
+      return;
+    }
+  } else if (!secretMatches(req.headers["x-telegram-bot-api-secret-token"], WEBHOOK_SECRET)) {
     res.status(401).send("Unauthorized");
     return;
   }
@@ -848,6 +947,24 @@ export default async function handler(req, res) {
     return;
   }
 
+  // Owner-only: "/health" checks every key and model id for free; "/health live" also makes each
+  // model answer one tiny message (a handful of requests — see lib/health.js). Nothing it sends
+  // contains a key.
+  const healthMatch = isOwner(chatId) && text?.match(/^\/health(?:@\w+)?(?:\s+(live))?\s*$/i);
+  if (healthMatch) {
+    const live = !!healthMatch[1];
+    await sendTelegramMessage(chatId, live ? "🔎 Running the live check — this takes about 15 seconds…" : "🔎 Checking every key and model — about 10 seconds…");
+    try {
+      const results = await runHealthCheck({ live });
+      for (const part of splitReport(formatReport(results, { live }))) await sendTelegramMessage(chatId, part);
+    } catch (err) {
+      console.error("/health failed:", err);
+      await sendTelegramMessage(chatId, "⚠️ The health check itself crashed — see the Vercel logs.");
+    }
+    res.status(200).send("OK");
+    return;
+  }
+
   if (text === "/users" && isOwner(chatId)) {
     const users = await listApprovedUsers();
     if (users.length === 0) {
@@ -963,6 +1080,14 @@ export default async function handler(req, res) {
       return;
     }
 
+    // "/file edit <change>" or "fix the typos" as the caption -> edit the file and send
+    // it back (Phases 2/3); anything else is read and answered as before.
+    const editRequest = detectEditRequest(message.caption || "", [{ name: fileName, type: mimeType }]);
+    if (editRequest && (await handleDmEdit(chatId, doc, fileName, mimeType, editRequest))) {
+      res.status(200).send("OK");
+      return;
+    }
+
     try {
       sendTypingAction(chatId); // fire-and-forget — already swallows its own errors
       const fileUrl = await getTelegramFileUrl(doc.file_id);
@@ -1068,6 +1193,61 @@ export default async function handler(req, res) {
     return;
   }
 
+  // /file [html|docx|pdf|md|txt] <what to make> — the DM bot's explicit way to get a
+  // file (the mini app also understands "build me a website"). There's no saved
+  // chat history here, so "give me that as a PDF" belongs to the mini app.
+  if (/^\/file(?:@\w+)?\s+edit\b/i.test(text)) {
+    await sendTelegramMessage(
+      chatId,
+      "To edit a file, send it to me as a file with a caption like:\n/file edit change the title to Spring Menu\n\nI can edit text/code, Word (.docx) and Excel (.xlsx) files."
+    );
+    res.status(200).send("OK");
+    return;
+  }
+  const fileRequest = /^\/file(?:@\w+)?(?:\s|$)/i.test(text) ? detectFileRequest(text) : null;
+  if (fileRequest) {
+    if (fileRequest.mode === "export") {
+      await sendTelegramMessage(chatId, "Tell me what to write, e.g. /file pdf a weekly study plan\n\nFormats: html, docx, pdf, md, txt. (To convert a chat reply into a file, use the chat app.)");
+      res.status(200).send("OK");
+      return;
+    }
+    const messageCheck = await checkMessageLimit(chatId);
+    const fileCheck = messageCheck.allowed ? await checkFileGenLimit(chatId) : messageCheck;
+    if (!fileCheck.allowed) {
+      await sendTelegramMessage(chatId, fileCheck.reason);
+      res.status(200).send("OK");
+      return;
+    }
+    sendTypingAction(chatId);
+    let tokensUsed = null;
+    try {
+      const out = await createFile({
+        format: fileRequest.format,
+        mode: "create",
+        request: fileRequest.request,
+        history: [{ role: "user", content: fileRequest.request }],
+      });
+      tokensUsed = out.tokensUsed;
+      await sendTelegramDocument(chatId, out.buffer, out.displayName, out.mime, `${out.displayName} · ${out.summary.words} words`);
+      await recordFileGenUsage(chatId); // only a delivered file spends file allowance
+    } catch (err) {
+      if (err instanceof FileGenError) {
+        tokensUsed = err.tokensUsed;
+        await sendTelegramMessage(chatId, `⚠️ ${err.userMessage}`);
+      } else {
+        console.error("DM file creation failed:", err);
+        await sendTelegramMessage(chatId, "⚠️ I couldn't make that file — please try again in a minute. This didn't use any of your file allowance.");
+      }
+    }
+    try {
+      await recordMessageUsage(chatId, tokensUsed); // a message, and its tokens count toward the allowance
+    } finally {
+      await releaseFileGenSlot(chatId); // after the allowance is recorded, so there's no gap
+    }
+    res.status(200).send("OK");
+    return;
+  }
+
   const imageMatch = text.match(/^\/(image|img)\s+([\s\S]+)/i);
   if (imageMatch) {
     const imageLimitCheck = await checkImageGenLimit(chatId);
@@ -1082,7 +1262,7 @@ export default async function handler(req, res) {
       await Promise.all([sendTelegramPhoto(chatId, buffer, mimeType, imagePrompt), recordImageUsage(chatId)]);
     } catch (err) {
       console.error("Image generation failed:", err.message);
-      await sendTelegramMessage(chatId, `⚠️ Couldn't generate that image: ${err.message}`);
+      await sendTelegramMessage(chatId, `⚠️ ${friendlyImageError(err)}`);
     }
     res.status(200).send("OK");
     return;

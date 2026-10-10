@@ -1071,6 +1071,31 @@
     border-radius: 8px;
     display: block;
   }
+  .generated-file {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-top: 8px;
+    padding: 10px 12px;
+    border-radius: 12px;
+    background: var(--bg);
+    border: 1px solid var(--section-separator);
+  }
+  .generated-file-info { min-width: 0; }
+  .generated-file-name { font-size: 14px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .generated-file-meta { font-size: 12px; color: var(--hint); margin-top: 2px; }
+  .generated-file-btn {
+    flex-shrink: 0;
+    border: none;
+    border-radius: 10px;
+    padding: 9px 14px;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    background: var(--button);
+    color: var(--button-text);
+  }
   .bubble-attachment-file {
     font-size: 13px;
     opacity: 0.85;
@@ -2153,12 +2178,10 @@
   // actually works inside the app (a plain <a download> is ignored there for
   // files on another domain); the fallbacks cover older Telegram versions and a
   // regular browser.
-  async function saveLightboxImage() {
-    const a = lightboxImages[lightboxIndex];
-    const fileName = lightboxFileName(a);
+  async function saveUrlToDevice(url, fileName) {
     if (tg?.downloadFile && tg.isVersionAtLeast?.("8.0")) {
       try {
-        tg.downloadFile({ url: a.url, file_name: fileName }, (started) => {
+        tg.downloadFile({ url, file_name: fileName }, (started) => {
           if (started === false) showNotice("Download cancelled.");
         });
         return;
@@ -2167,12 +2190,12 @@
       }
     }
     if (tg?.openLink) {
-      tg.openLink(a.url);
-      showNotice("Opened in your browser — press and hold the picture to save it.");
+      tg.openLink(url);
+      showNotice("Opened in your browser — press and hold (or use the share/save option) to keep it.");
       return;
     }
     try {
-      const blob = await (await fetch(a.url)).blob();
+      const blob = await (await fetch(url)).blob();
       const link = document.createElement("a");
       link.href = URL.createObjectURL(blob);
       link.download = fileName;
@@ -2181,8 +2204,12 @@
       link.remove();
       setTimeout(() => URL.revokeObjectURL(link.href), 10000);
     } catch {
-      window.open(a.url, "_blank");
+      window.open(url, "_blank");
     }
+  }
+  function saveLightboxImage() {
+    const a = lightboxImages[lightboxIndex];
+    return saveUrlToDevice(a.url, lightboxFileName(a));
   }
   document.getElementById("lightbox-close").addEventListener("click", closeLightbox);
   document.getElementById("lightbox-save").addEventListener("click", saveLightboxImage);
@@ -2227,6 +2254,7 @@
     const list = document.createElement("div");
     list.className = "search-result-list";
     data.results.forEach((r) => {
+      if (!/^https?:\/\//i.test(String(r.url || ""))) return; // never link a javascript:/data: URL
       const card = document.createElement("a");
       card.className = "search-result-card";
       card.href = r.url;
@@ -2551,6 +2579,7 @@
           <tr><td>Images/mo</td><td>${free.imageGenPerMonth}</td><td>${pro.imageGenPerMonth}</td><td>Unlimited</td></tr>
           <tr><td>Voice/day</td><td>${voiceMinutes(free)}</td><td>${voiceMinutes(pro)}</td><td>${voiceMinutes(premium)}</td></tr>
           <tr><td>Excel/PPT/code</td><td>—</td><td>✓</td><td>✓</td></tr>
+          <tr><td>Make files/day</td><td>${free.filesPerDay}</td><td>${pro.filesPerDay}</td><td>${premium.filesPerDay}</td></tr>
           <tr><td>Extra model/day</td><td>—</td><td>—</td><td>${premium.extraPerDay}</td></tr>
           <tr><td>New features</td><td>—</td><td>—</td><td>Soon</td></tr>
         </table>
@@ -2849,7 +2878,11 @@
       const chats = await apiFetch("/api/miniapp/chats");
       renderChatList(chats, chatDrawerListEl);
     } catch (err) {
-      chatDrawerListEl.innerHTML = `<div class="memory-empty">Couldn't load chats: ${err.message}</div>`;
+      chatDrawerListEl.innerHTML = "";
+      const failEl = document.createElement("div");
+      failEl.className = "memory-empty";
+      failEl.textContent = `Couldn't load chats: ${err.message}`;
+      chatDrawerListEl.appendChild(failEl);
     }
   }
   function openChatDrawer() {
@@ -2873,8 +2906,10 @@
   });
 
   function showAuthError(message) {
-    document.getElementById("view-list").innerHTML =
-      `<div class="auth-error">Couldn't load your chats — open this from the bot inside Telegram.<br><br>(${message})</div>`;
+    const authErrEl = document.createElement("div");
+    authErrEl.className = "auth-error";
+    authErrEl.append("Couldn't load your chats — open this from the bot inside Telegram.", document.createElement("br"), document.createElement("br"), `(${message})`);
+    document.getElementById("view-list").replaceChildren(authErrEl);
   }
 
   const DOUBLE_CHECK_ICON =
@@ -2931,6 +2966,28 @@
     // a filename chip rather than an image, since there's nothing to
     // preview yet in the pending case.
     for (const a of nonImagesOrPending) {
+      if (a.generated && a.url) {
+        // A file the assistant made (see lib/fileGen/): a card with a Download button.
+        const card = document.createElement("div");
+        card.className = "generated-file";
+        const info = document.createElement("div");
+        info.className = "generated-file-info";
+        const nameEl = document.createElement("div");
+        nameEl.className = "generated-file-name";
+        nameEl.textContent = a.name || "file";
+        const metaEl = document.createElement("div");
+        metaEl.className = "generated-file-meta";
+        metaEl.textContent = a.bytes ? `${(a.bytes / 1024).toFixed(a.bytes < 10240 ? 1 : 0)} KB` : "";
+        info.append(nameEl, metaEl);
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "generated-file-btn";
+        btn.textContent = "⬇ Download";
+        btn.addEventListener("click", () => saveUrlToDevice(a.url, a.name || "file"));
+        card.append(info, btn);
+        body.appendChild(card);
+        continue;
+      }
       const chip = document.createElement("div");
       chip.className = "bubble-attachment-file";
       chip.textContent = `📎 ${a.name || "file"}`;

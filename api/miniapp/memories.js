@@ -24,7 +24,7 @@ export default async function handler(req, res) {
 
   if (req.method === "POST") {
     const { content } = req.body || {};
-    if (!content || !content.trim()) {
+    if (typeof content !== "string" || !content.trim()) {
       res.status(400).json({ error: "content is required" });
       return;
     }
@@ -39,7 +39,7 @@ export default async function handler(req, res) {
 
   if (req.method === "PATCH") {
     const { id, content } = req.body || {};
-    if (!id || !content || !content.trim()) {
+    if (!id || typeof content !== "string" || !content.trim()) {
       res.status(400).json({ error: "id and content are required" });
       return;
     }

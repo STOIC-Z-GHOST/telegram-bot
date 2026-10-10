@@ -24,7 +24,8 @@ export default async function handler(req, res) {
     return;
   }
 
-  const query = (req.body?.query || "").trim();
+  const rawQuery = req.body?.query;
+  const query = (typeof rawQuery === "string" ? rawQuery : "").trim().slice(0, 500); // a search query, not a document
   if (!query) {
     res.status(400).json({ error: "query is required" });
     return;

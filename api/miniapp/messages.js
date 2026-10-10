@@ -47,7 +47,7 @@
 // read or write — there's no way to touch a chat that isn't yours, even if
 // you guess its id.
 
-import { eq, and, asc } from "drizzle-orm";
+import { eq, and, asc, desc } from "drizzle-orm";
 import { put } from "@vercel/blob";
 import { db } from "../../db/client.js";
 import { chats, messages } from "../../db/schema.js";
@@ -55,7 +55,15 @@ import { requireTelegramUser } from "../../lib/telegramAuth.js";
 import { getConversationReply, MODEL_TIER_MIN_PLAN, MAX_MODEL_ID } from "../../lib/ai.js";
 import { searchWeb, condenseSearchOutcomeForCache, SEARCH_CACHE_FRESHNESS_MS } from "../../lib/search.js";
 import { analyzeAttachments } from "../../lib/attachments.js";
-import { generateImage, extractImageGenMarker, plausiblyImageRequest } from "../../lib/imagegen.js";
+import { generateImage, extractImageGenMarker, plausiblyImageRequest, friendlyImageError } from "../../lib/imagegen.js";
+import { detectFileRequest } from "../../lib/fileGen/detect.js";
+import { createFile, FileGenError, FILE_FORMATS, asciiSlug } from "../../lib/fileGen/index.js";
+import { detectEditRequest } from "../../lib/fileGen/editDetect.js";
+import { editFile } from "../../lib/fileGen/edit/index.js";
+import { classifyFile } from "../../lib/fileTypes.js";
+import { fetchOwnBlob, sanitizeAttachments, AttachmentFetchError } from "../../lib/safeUrl.js";
+
+const MAX_MESSAGE_CHARS = 30000; // roughly 8,000 tokens — plenty for pasted code or an essay
 import { isMemoryEnabled, listMemories, saveMemory, extractMemoryMarker, MEMORY_LIMIT } from "../../lib/memory.js";
 import { getUserTier } from "../../lib/subscriptions.js";
 import {
@@ -73,6 +81,9 @@ import {
   recordExtraUsage,
   checkMaxLimit,
   recordMaxUsage,
+  checkFileGenLimit,
+  recordFileGenUsage,
+  releaseFileGenSlot,
   checkSearchLimit,
   recordSearchUsage,
 } from "../../lib/limits.js";
@@ -100,6 +111,120 @@ async function resolveModelTier(requestedTier, telegramUserId) {
   return actual >= required ? requestedTier : "standard";
 }
 
+// Creates a file (HTML / Word / PDF / Markdown / text — see lib/fileGen/), stores
+// it, and saves it as the assistant's message with a download attachment.
+// Like generateAndSaveImage it responds on res itself. Only a DELIVERED file
+// spends file allowance; the tokens it used are counted either way.
+const FILE_INTRO = {
+  html: "🌐 Your web page is ready — download it, then open the file in your browser.",
+  docx: "📄 Your Word document is ready.",
+  pdf: "📕 Your PDF is ready.",
+  md: "📝 Your Markdown file is ready.",
+  txt: "📝 Your text file is ready.",
+};
+async function generateAndSaveFile(res, chat, userId, fileRequest, produce = null) {
+  let assistantContent;
+  let attachment = null;
+  let tokensUsed = null;
+
+  try {
+    let out;
+    if (produce) {
+      out = await produce(); // editing an uploaded file (see editAndSaveFile)
+    } else {
+      const history = (await db.select().from(messages).where(eq(messages.chatId, chat.id)).orderBy(asc(messages.createdAt)))
+        .map((m) => ({ role: m.role, content: m.content, attachments: m.attachments }));
+      out = await createFile({ format: fileRequest.format, mode: fileRequest.mode, request: fileRequest.request, history });
+    }
+    tokensUsed = out.tokensUsed;
+    // Stored as a download (octet-stream), never as a page: a generated HTML file
+    // served inline from the blob domain could be shared as a live fake site.
+    const blob = await put(`generated-files/${chat.id}-${Date.now()}-${asciiSlug(out.title)}.${out.ext}`, out.buffer, {
+      access: "public",
+      contentType: "application/octet-stream",
+    });
+    attachment = { url: blob.downloadUrl || blob.url, name: out.displayName, type: out.mime, bytes: out.buffer.length, generated: true };
+    assistantContent =
+      fileRequest.mode === "edit"
+        ? `✏️ Done — your edited file is ready.\n\n${out.displayName}\n\n${(out.notes || []).join("\n")}`.trim()
+        : `${FILE_INTRO[fileRequest.format]}\n\n${out.displayName} · ${out.summary.words} words\n\n` +
+          (fileRequest.mode === "export" ? "" : "Want changes? Tell me what to adjust and I'll make a new version.");
+  } catch (err) {
+    if (err instanceof FileGenError) {
+      tokensUsed = err.tokensUsed;
+      assistantContent = `⚠️ ${err.userMessage}`;
+    } else {
+      console.error("File creation failed:", err);
+      assistantContent = "⚠️ I couldn't make that file — please try again in a minute. This didn't use any of your file allowance.";
+    }
+  }
+
+  try {
+    await recordMessageUsage(userId, tokensUsed); // counts as a message, and its tokens count toward the allowance
+    if (attachment) await recordFileGenUsage(userId);
+  } finally {
+    await releaseFileGenSlot(userId); // after the allowance is recorded, so there's no gap
+  }
+
+  const [assistantMessage] = await db
+    .insert(messages)
+    .values({ chatId: chat.id, role: "assistant", content: assistantContent, attachments: attachment ? [attachment] : null })
+    .returning();
+
+  const source = (fileRequest.request || attachment?.name || "New chat").trim();
+  const titleFields = chat.title === "New chat" ? { title: source.length > 40 ? `${source.slice(0, 40)}…` : source } : {};
+  await db.update(chats).set({ updatedAt: new Date(), ...titleFields }).where(eq(chats.id, chat.id));
+
+  res.status(201).json(assistantMessage);
+}
+
+// ---------------------------------------------------------------------------
+// Editing an uploaded file (Phases 2 and 3 — lib/fileGen/edit/) and sending it back.
+// ---------------------------------------------------------------------------
+// The file an edit applies to: the one attached to this message or, for an explicit
+// "/file edit" with nothing attached, the most recent file in this chat (an upload,
+// or one the bot made earlier).
+async function resolveEditSource(chatId, editRequest) {
+  if (editRequest.attachment) return editRequest.attachment;
+  const recent = await db.select().from(messages).where(eq(messages.chatId, chatId)).orderBy(desc(messages.createdAt)).limit(30);
+  for (const m of recent) {
+    for (const a of Array.isArray(m.attachments) ? m.attachments : []) {
+      if (a?.url && !(a.type || "").startsWith("image/") && classifyFile(a.name, a.type)) return a;
+    }
+  }
+  return null;
+}
+
+// Counts as one file (daily file allowance), one message and its tokens — the same
+// bookkeeping as creating a file, because it goes through generateAndSaveFile.
+async function editAndSaveFile(res, chat, userId, editRequest) {
+  const fileRequest = { format: "edit", mode: "edit", request: editRequest.instruction };
+  await generateAndSaveFile(res, chat, userId, fileRequest, async () => {
+    if (editRequest.tooMany) throw new FileGenError("Please send one file at a time to edit.", { retryable: false });
+    const source = await resolveEditSource(chat.id, editRequest);
+    if (!source) {
+      throw new FileGenError(
+        "I don't see a file to edit. Attach a Word, Excel or text/code file together with what to change, or share the file first and then send /file edit <what to change>.",
+        { retryable: false }
+      );
+    }
+    if (!editRequest.attachment) {
+      // A file from earlier in the chat wasn't type-checked for this message yet.
+      const typeCheck = await checkFileTypeAllowed(userId, source.name, source.type);
+      if (!typeCheck.allowed) throw new FileGenError(typeCheck.reason, { retryable: false });
+    }
+    let buffer;
+    try {
+      buffer = await fetchOwnBlob(source.url, { timeoutMs: 15000, maxBytes: 16 * 1024 * 1024 });
+    } catch (err) {
+      if (err instanceof AttachmentFetchError) throw new FileGenError(err.message, { retryable: false });
+      throw err;
+    }
+    if (editRequest.attachment) await recordFileUsage(userId, buffer.length);
+    return editFile({ buffer, name: source.name, mime: source.type, instruction: editRequest.instruction });
+  });
+}
+
 // Shared by both the explicit "/image" path and the natural-language
 // marker path below. Generates via Pollinations, re-uploads to our own
 // Blob store (not left pointing at Pollinations' URL) so it stays
@@ -124,7 +249,8 @@ async function generateAndSaveImage(res, chat, userId, prompt) {
     assistantContent = `Generated: ${prompt}`;
     attachment = { url: blob.url, name: `${prompt.slice(0, 40)}.jpg`, type: mimeType };
   } catch (err) {
-    assistantContent = `⚠️ Couldn't generate that image: ${err.message}`;
+    console.error("Image generation failed:", err.message);
+    assistantContent = `⚠️ ${friendlyImageError(err)}`;
   }
 
   await recordMessageUsage(userId, null); // still counts toward messages/hour, no tokens involved
@@ -174,8 +300,26 @@ export default async function handler(req, res) {
 
   if (req.method === "POST") {
     const { chatId, content, attachments: rawAttachments, thinking, search, tier: requestedTier } = req.body || {};
-    const attachments = Array.isArray(rawAttachments) ? rawAttachments : [];
+    // Never trust the array as sent: every URL must be our own Blob storage, at most
+    // MAX_ATTACHMENTS files, and only { url, name, type, bytes } survive (so a forged
+    // object can't be stored in the database or smuggle a "generated" flag).
+    const cleaned = sanitizeAttachments(rawAttachments);
+    if (!cleaned.ok) {
+      res.status(400).json({ error: "bad_attachments", message: "Those attachments couldn't be read — please upload them again." });
+      return;
+    }
+    const attachments = cleaned.attachments;
     const hasAttachment = attachments.length > 0;
+    // A message is text, and not a book: without a cap one request could push megabytes
+    // of text at the model (the 4.5MB body limit is the only other ceiling).
+    if (content !== undefined && content !== null && typeof content !== "string") {
+      res.status(400).json({ error: "bad_request", message: "That message couldn't be read." });
+      return;
+    }
+    if ((content || "").length > MAX_MESSAGE_CHARS) {
+      res.status(413).json({ error: "too_long", message: `That message is too long — please keep it under ${MAX_MESSAGE_CHARS.toLocaleString("en-US")} characters, or send it as a file.` });
+      return;
+    }
     const trimmedContent = (content || "").trim();
     const wantsThinking = !!thinking && !hasAttachment; // thinking mode is text-only, same as the DM bot's /think
     // "/review <code or question>" — a text command (not a UI toggle, unlike
@@ -283,6 +427,45 @@ export default async function handler(req, res) {
       attachments: hasAttachment ? attachments : null,
     });
 
+    // --- File creation ("/file pdf <topic>", or "build me a website", "give me that as a PDF") ---
+    // Decided by plain keyword rules (lib/fileGen/detect.js), not by asking the AI.
+    // An explicit /file that is over its limit is an error. A natural-language
+    // guess that is over its limit just falls through to a normal chat reply
+    // (the website code arrives as text) with a note saying why.
+    let fileFallbackNote = null;
+
+    // --- Editing an uploaded file ("fix the typos" + a file, or "/file edit <change>") ---
+    // Checked first: "/file edit …" must not be mistaken for "create a document".
+    // Same rule as creation: an explicit command over its limit is an error; a
+    // natural-language guess just gets a normal reply (the file is read as usual).
+    const editRequest = detectEditRequest(trimmedContent, attachments);
+    if (editRequest) {
+      const editCheck = await checkFileGenLimit(user.id);
+      if (editCheck.allowed) {
+        await editAndSaveFile(res, chat, user.id, editRequest);
+        return;
+      }
+      if (editRequest.explicit) {
+        res.status(429).json({ error: "rate_limited", message: editCheck.reason });
+        return;
+      }
+      fileFallbackNote = `${editCheck.reason} Here's a normal reply instead.`;
+    }
+
+    const fileRequest = !hasAttachment ? detectFileRequest(trimmedContent) : null;
+    if (fileRequest) {
+      const fileCheck = await checkFileGenLimit(user.id);
+      if (fileCheck.allowed) {
+        await generateAndSaveFile(res, chat, user.id, fileRequest);
+        return;
+      }
+      if (fileRequest.explicit) {
+        res.status(429).json({ error: "rate_limited", message: fileCheck.reason });
+        return;
+      }
+      fileFallbackNote = `${fileCheck.reason} Here it is as text instead.`;
+    }
+
     // --- Image generation ("/image <description>") ---
     // A completely separate path from the AI text/vision reply below —
     // Pollinations returns image bytes directly, not something that goes
@@ -294,7 +477,7 @@ export default async function handler(req, res) {
 
     let rawReply, tokensUsed;
     let imageMarkerAllowed = true; // set per message below; read again after the AI call, outside the block that sets it
-    let tierNote = null; // one-line explanation appended to the reply when Extra had to run on Max instead
+    let tierNote = fileFallbackNote; // one-line explanation appended to the reply (Extra ran on Max instead, or a file request fell back to text)
     let extraUsedGemini = false;
     let maxUsedLarge = false; // a reply served by the costly Max model — counted against a trial's daily cap
     let searchCacheFields = {}; // merged into the end-of-request chat UPDATE below, only ever set on a successful live search

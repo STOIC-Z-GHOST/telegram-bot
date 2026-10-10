@@ -379,6 +379,84 @@ one access list, not two that could drift out of sync. The table name and
 status lifecycle (`approved` / `denied`) are left over from when this was
 an invite-only bot with manual review; `denied` now just means "banned."
 
+## Creating files (HTML, Word, PDF, Markdown, text)
+
+The bot can hand people a real file. In the **mini app**: `/file pdf a weekly study plan`
+(format optional — Word is the default), or just ask ("build me a website for my bakery",
+"write a Word document about…"), or convert the last reply ("give me that as a PDF" —
+instant, no AI call). In the **DM bot**: `/file <html|docx|pdf|md|txt> <what to make>`.
+
+How it works (`lib/fileGen/`): the AI writes only TEXT — Markdown for documents, one HTML
+page for websites — and the server builds the file: `docx.js` (Word, via the `docx` package),
+`pdf.js` (hand-laid-out with `pdf-lib`, embedded Noto Sans + Noto Sans Ethiopic so English and
+Amharic can share a page; other scripts show "?"), `markdown.js` (shared parser). Detection is
+plain keyword rules in `detect.js`, not an instruction to the AI — an explicit `/file` over its
+limit is an error, a natural-language guess over its limit falls back to a normal text reply.
+
+- **Limits:** `filesPerDay` per rolling 24h — Free 1, Pro 5, Premium 15 (trials 3 / 8) — plus a
+  site-wide cap `FILE_SITE_DAILY_CAP` (default 150). Only a delivered file spends allowance.
+- **Tokens:** the tokens a file uses are added to the person's token count (and it counts as one
+  message), whether or not the file succeeded. Export-of-last-reply uses none.
+- **Always the Standard model chain**, 5,000 output-token ceiling, 48s total time budget.
+- **HTML is stored as a download** (octet-stream, `downloadUrl`), never as a page served from
+  your blob domain — a generated fake login page must not be shareable as a live link.
+- **Not built:** PowerPoint output / editing, PDF editing, Word->PDF conversion (impossible on
+  Vercel). Editing uploaded files (Phases 2 and 3) is in the next section.
+
+## Health check: are the keys and models really connected?
+
+Two ways to run the same check (`lib/health.js`):
+
+- **In the bot (owner only):** send `/health` for the quick check or `/health live` for the live one.
+  It tests the keys that are actually set on Vercel, from the running deployment.
+- **Before deploying:** copy `.env.example` to `.env.local`, fill it in (or `vercel env pull .env.local`),
+  then `npm run check` or `npm run check:live`. It exits with code 1 if anything is broken.
+
+| | Quick (default) | Live |
+|---|---|---|
+| What it does | Asks each provider free questions: "is this key valid?" and "does this exact model id exist?" | Also sends ONE tiny "reply with OK" to each model |
+| Cost | No generation quota, no money | A handful of requests: 1 of OpenRouter's 50/day; 1 Gemini call on the roomy 3.5 Flash-Lite model (never the 20/day one); a few Cloudflare neurons; a fraction of a cent of Mistral. No image is generated. |
+
+It checks: every required setting; the Neon database **and that every table exists** (a missing one names the
+migration file to run); the Telegram bot token, that a webhook is set and what Telegram's last delivery error was;
+the Vercel Blob token; every Gemini model id; and each provider (Groq, Cerebras, Cloudflare, OpenRouter, Mistral,
+ModelScope, Z.ai, SearXNG, Tavily) with the exact model ids `lib/ai.js` calls — taken from the same constants,
+so a retired or mistyped model shows up here instead of as a silent fallback. ✅ ok, ⚠️ works but look
+(rate-limited right now, provider hiccup), ❌ fix this, ⏭️ not configured (optional). No key is ever printed:
+provider messages are scrubbed first. Tests: `node --no-deprecation tests/health.test.mjs` (54 checks, fake network).
+
+## Editing files people upload (Phases 2 and 3)
+
+Send a file with what to change and get the edited copy back (`name-edited.ext`).
+
+- **Mini app:** attach the file and write the change as the message — "fix the typos", "add a
+  Total column" — or use `/file edit <change>` (with nothing attached it edits the file most
+  recently shared in that chat, including one the bot made).
+- **DM bot:** send the file as a document with the caption `/file edit <change>` (or a plain
+  caption like "fix the typos").
+- Natural-language detection (`lib/fileGen/editDetect.js`) is deliberately cautious: exactly one
+  editable file attached, an edit verb, and not a question or an "explain/summarise" request.
+  `/file edit` always works. Over the file allowance, a natural-language guess falls back to the
+  normal "read the file" reply; the explicit command shows the limit message.
+- **Counts like creating a file:** one `filesPerDay` unit (only if delivered), one message, and
+  the tokens used. Plan gating for the *upload* is unchanged (Excel and code/data files are Pro+).
+
+What can be edited (`lib/fileGen/edit/`):
+
+| File | How | Notes |
+|---|---|---|
+| Text, code, HTML, Markdown, CSV, JSON, config… (`text.js`) | Up to ~8,000 characters: the model returns the whole new file. Larger (to 30,000): it returns `{find, replace}` patches we apply ourselves. | Result is checked: JSON must still parse, a page keeps `</html>`, a file can't quietly lose most of its content, CRLF line endings and the final newline are preserved. |
+| Excel `.xlsx` (`xlsx.js`) | The model sees a grid and returns JSON operations (set / formula / fill / clear / append_row / insert_row / delete_rows / style / add_sheet); we validate and apply them with `exceljs`. | Workbooks with charts, pivot tables, slicers or macros are **refused** (exceljs would drop them). Formulas calculate when the file is opened. Formulas that call out of the workbook (WEBSERVICE, HYPERLINK, DDE…) are blocked. Inserting/deleting rows doesn't rewrite formulas that point below them — the person is warned. |
+| Word `.docx`, in place (`docx.js`) | Body paragraphs are numbered; the model returns changes by number; only those paragraphs are rewritten in `word/document.xml`. | Styles, images, tables, headers, footers, numbering and section breaks are untouched. An edited paragraph keeps its style and the look of its first words but loses mid-sentence formatting (one bold word). Paragraphs with fields, links, text boxes, equations, content controls or tracked changes are **locked**. Headers/footers/text boxes are not editable. Output is re-checked (balanced tags, still readable) before it is sent. |
+| PDF, PowerPoint, images | Not editable — the person gets a short explanation (and, for PDF, the "send it as Word" suggestion). | A natural-language "translate this PDF" is just answered in chat. |
+
+**One file at a time:** a person can only have one file being made or edited at once (a second
+request gets "I'm still working on your previous file"). The daily file count only moves when a file
+is delivered, so without this a burst of simultaneous requests would all pass the check together.
+
+Tests: `node --no-deprecation tests/phase23-edit.test.mjs` (55 checks on real .txt/.xlsx/.docx
+files with a mocked model) and `tests/phase1-create.test.mjs`. No new dependencies or env vars.
+
 ## Provider chains and shared budgets
 
 Two providers give you a shared *budget* rather than a per-model request count,
@@ -403,6 +481,7 @@ Chains (first available wins, then the next):
 - **Max:** Mistral Large 3 (pinned `mistral-large-2512`) -> Standard chain
 - **Extra:** four Gemini Flash models -> Max -> Standard chain
 - **Think mode** skips Cloudflare (reasoning tokens bill as output and drain the shared pool)
+- **Image generation:** Cloudflare FLUX.1 [schnell] -> Pollinations Flux 1024 -> Pollinations defaults
 - **Image questions:** Gemini -> Gemini Flash-Lite -> Cloudflare Gemma 4 -> OpenRouter Qwen-VL -> ModelScope -> Z.ai (Pixtral was retired by Mistral and removed)
 
 Cloudflare needs **both** `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN`
@@ -618,6 +697,23 @@ plausibly asks for a picture (`plausiblyImageRequest` in `lib/imagegen.js`: imag
 words in English and a few other languages; mostly non-Latin text such as Amharic
 always passes). Standard, Max and Extra are unchanged. `/image` always works on
 every tier.
+
+**Image generation — providers, quality and failures.** Order: **Cloudflare
+FLUX.1 [schnell]** (when `CLOUDFLARE_ACCOUNT_ID` + `CLOUDFLARE_API_TOKEN` are set and
+the day's neuron budget has room; ~58 neurons per 1024px image at 4 steps) -> Pollinations
+Flux 1024 -> Pollinations defaults. All attempts together stay under 50s to fit the 60s
+function limit. A prompt Cloudflare refuses for safety reasons is final — it is not
+retried on another provider. Optional env vars: `CF_IMAGE_MODEL` (default
+`@cf/black-forest-labs/flux-1-schnell`; a model that returns raw image bytes also works)
+and `CF_IMAGE_STEPS` (1-8, default 4). Pollinations notes: Left to its defaults,
+Pollinations' no-key tier uses a small fast model (an error it returned listed
+`model: sana`, 768x768), which is why pictures were soft and any text was gibberish.
+`generateImage` in `lib/imagegen.js` now asks for Flux at 1024x1024 first and, if that
+fails, tries the plain defaults once; the DM bot and the mini app share that one path.
+When both fail, people see a short "the image service is busy, try again in a minute"
+message — the provider's raw JSON error goes to the logs only. A failed generation
+never spends image allowance. Image models can't really write text whatever the model:
+keep any wanted text to a few big words.
 
 **Viewing and saving images (mini app).** Tapping a picture in a chat opens a
 full-screen viewer: tap the picture to zoom, ‹ › to move between several, ✕ or the
