@@ -41,7 +41,7 @@ function makeFetch(overrides = {}) {
   return async (url, opts = {}) => {
     url = String(url);
     const method = opts.method || "GET";
-    calls.push({ url, method, headers: opts.headers || {} });
+    calls.push({ url, method, headers: opts.headers || {}, body: opts.body });
     for (const [pattern, handler] of Object.entries(overrides)) {
       if (url.includes(pattern)) { const r = await handler(url, opts); if (r) return r; }
     }
@@ -199,7 +199,10 @@ check("live: Groq's two chat models answer (merged into their model lines)", res
 check("live: no separate '— live' lines any more", !res.some((r) => r.name.endsWith("— live")));
 check("live: Gemini live test uses ONLY the roomy lite model", posts.filter((p) => p.url.includes("generateContent")).length === 1 && posts.find((p) => p.url.includes("generateContent")).url.includes("gemini-3.5-flash-lite"), posts.filter((p) => p.url.includes("generateContent")).map((p) => p.url.split("/models/")[1]).join());
 check("live: never calls the 20/day primary Gemini model", !posts.some((p) => p.url.includes("gemini-3.6-flash")));
-check("live: Mistral tests all four models (well under a cent)", posts.filter((p) => p.url.includes("api.mistral.ai")).length === 4);
+check("live: Mistral gets exactly 2 requests (its free plan allows ~2/minute), not 4", posts.filter((p) => p.url.includes("api.mistral.ai")).length === 2);
+check("live: those 2 are the Max model and the cheapest", (() => { const m = posts.filter((p) => p.url.includes("api.mistral.ai")).map((p) => JSON.parse(p.body).model).sort(); return m.join() === ["ministral-8b-2512", "mistral-large-2512"].sort().join(); })());
+check("live: the other Mistral models say why they weren't asked", find(res, "Mistral", "mistral-small-2603")?.status === "ok" && /not live-tested: Mistral's free plan/.test(find(res, "Mistral", "mistral-small-2603").detail), find(res, "Mistral", "mistral-small-2603")?.detail);
+check("live: OpenRouter's image model says it was spared (50/day)", /not live-tested: to save/.test(find(res, "OpenRouter", "gemma-4-26b-a4b-it:free")?.detail || ""));
 check("live: OpenRouter spends exactly 1 of its 50/day", posts.filter((p) => p.url.includes("openrouter.ai")).length === 1);
 check("live: Cloudflare text + flash + vision answer", res.filter((r) => r.group === "Cloudflare Workers AI" && /answered in/.test(r.detail) && r.status === "ok").length === 3);
 check("live: no image is generated (no CF /ai/run call)", !posts.some((p) => /\/ai\/run\//.test(p.url)));
@@ -301,6 +304,44 @@ globalThis.fetch = makeFetch({ "getMe": () => J({ ok: false }, 401) });
 res = await run();
 const att = formatReport(res);
 check("'Needs attention' lists failures first", /Needs attention\n❌ Telegram: Bot token/.test(att), att.slice(att.indexOf("Needs attention"), att.indexOf("Needs attention") + 120));
+globalThis.fetch = makeFetch();
+
+
+// ===== 13c. regressions from the SECOND real /health live run =====
+// Mistral probed strictly one at a time (it allows ~2 requests a minute)
+{
+  let inFlight = 0, maxInFlight = 0;
+  globalThis.fetch = makeFetch({
+    "api.mistral.ai/v1/chat/completions": async () => { inFlight++; maxInFlight = Math.max(maxInFlight, inFlight); await new Promise((r) => setTimeout(r, 15)); inFlight--; return null; },
+  });
+  await run({ live: true });
+  check("Mistral live requests never overlap", maxInFlight === 1, `max in flight: ${maxInFlight}`);
+}
+
+// 403 "not available in your subscription tier" -> fail naming what the key CAN use (the list = what the plan offers)
+globalThis.fetch = makeFetch({
+  "api.mistral.ai/v1/models/mistral-large-2512": () => J({ error: { message: "not found" } }, 404),
+  "api.mistral.ai/v1/models": (u) => (u.endsWith("/models") ? J({ data: [{ id: "ministral-14b-2512" }, { id: "ministral-8b-2512" }, { id: "mistral-small-2603" }, { id: "mistral-medium-3-5" }] }) : null),
+  "api.mistral.ai/v1/chat/completions": (u, o) => (JSON.parse(o.body).model === "mistral-large-2512" ? J({ message: "This model is not available in your subscription tier" }, 403) : null),
+});
+res = await run({ live: true });
+const ml = find(res, "Mistral", "mistral-large-2512");
+check("Mistral Large 403 -> fail saying the PLAN blocks it (not 'key rejected')", ml?.status === "fail" && /not allowed on your plan \(HTTP 403\): .*subscription tier/.test(ml.detail) && !/key rejected/.test(ml.detail), ml?.detail);
+check("...and lists what the plan CAN use, bigger models first", /Models your key can list, for example: mistral-medium-3-5/.test(ml.detail), ml?.detail);
+check("...and does not blame the key as a whole", find(res, "Mistral", "API key")?.status === "ok" && find(res, "Mistral", "ministral-8b-2512")?.status === "ok");
+
+// 429 now carries the provider's own words so you can tell "daily cap" from "busy upstream"
+globalThis.fetch = makeFetch({ "openrouter.ai/api/v1/chat/completions": () => J({ error: { message: "Provider returned error: google/gemma-4-31b-it:free is temporarily rate-limited upstream" } }, 429) });
+res = await run({ live: true });
+const or429 = find(res, "OpenRouter", "gemma-4-31b-it:free");
+check("429 -> warn that includes the provider's message", or429?.status === "warn" && /temporarily rate-limited upstream/.test(or429.detail) && /key itself works/.test(or429.detail), or429?.detail);
+
+// a sleeping SearXNG
+const sx = { ...process.env, SEARXNG_URL: "https://s.example.org" };
+globalThis.fetch = makeFetch({ "s.example.org": async () => { throw Object.assign(new Error("Request timed out after 12000ms"), { name: "AbortError" }); } });
+res = await run({}, {}, sx);
+const sxl = find(res, "Search", "SearXNG");
+check("SearXNG timeout -> fail that explains the cost and the fix", sxl?.status === "fail" && /probably asleep/.test(sxl.detail) && /up to 9s/.test(sxl.detail) && /unset SEARXNG_URL/.test(sxl.detail), sxl?.detail);
 globalThis.fetch = makeFetch();
 
 // ===== 14. formatting =====

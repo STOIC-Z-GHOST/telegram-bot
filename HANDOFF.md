@@ -257,3 +257,19 @@ Still open (needs the owner): `TELEGRAM_BOT_USERNAME` didn't match the bot behin
 wrong bot); ModelScope key returned 401; Mistral `mistral-large-2512` unverified (retest with the new check); SearXNG needs
 `json` enabled in `search.formats`.
 
+### Second real `/health live` run (10 Oct 2026, after the model fixes)
+Green: Groq (gpt-oss-120b + gpt-oss-20b answer), Gemini, Cloudflare gpt-oss-120b + Gemma 4, Mistral Ministral 14B/8B, Tavily, DB, Blob, webhook.
+Findings and what was done:
+- **Mistral Large (Max mode) -> HTTP 403 "not available in your subscription tier".** The key works; the free plan can't use that model. Max mode
+  silently falls through to the Standard chain until `MISTRAL_LARGE_MODEL` points at a model the plan can use (or the plan is upgraded). The checker
+  now says "not allowed on your plan" (it wrongly said "key rejected") and lists what the key CAN list, bigger models first.
+- The `mistral-small` / OpenRouter Gemma / Z.ai "rate-limited" warnings: Mistral's was caused by the check itself (4 parallel requests vs a ~2/min
+  plan) -> Mistral live tests are now 2, strictly one at a time. 429s now carry the provider's message. Z.ai is tightly rate-limited by design.
+- ModelScope 401 "Authentication failed ... valid ModelScope token" = the token itself is wrong (not account verification).
+- SearXNG timed out (asleep on a free host). SearXNG is tried FIRST with a 9s timeout (`lib/search.js`), so while asleep every web search
+  pays up to 9s before Tavily answers; its JSON output was also off in the first run. Recommended: unset `SEARXNG_URL` unless it is kept awake + fixed.
+- Cloudflare `llama-3.1-8b-instruct-fp8-fast`: still answers; absent from the catalog search. Cloudflare's changelog (8 May 2026) says `-fast` variants
+  stay active, so this is a watch item, not an outage. If it ever stops, `CF_FLASH_MODEL=@cf/meta/llama-3.3-70b-instruct-fp8-fast` still exists but costs
+  ~6x the neurons per request.
+- `TELEGRAM_BOT_USERNAME` still mismatched (needs the owner to change the env var).
+

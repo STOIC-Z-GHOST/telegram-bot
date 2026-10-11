@@ -415,7 +415,7 @@ Two ways to run the same check (`lib/health.js`):
 | | Quick (default) | Live |
 |---|---|---|
 | What it does | Asks each provider free questions: "is this key valid?" and "does this exact model id exist?" | Also sends ONE tiny "reply with OK" to each model |
-| Cost | No generation quota, no money | A handful of requests: 1 of OpenRouter's 50/day; 1 Gemini call on the roomy 3.5 Flash-Lite model (never the 20/day one); a few Cloudflare neurons; a fraction of a cent of Mistral. No image is generated. |
+| Cost | No generation quota, no money | A handful of requests: 1 of OpenRouter's 50/day; 1 Gemini call on the roomy 3.5 Flash-Lite model (never the 20/day one); a few Cloudflare neurons; 2 Mistral requests, one at a time (its free plan allows only ~2 a minute); a few Groq and Tavily calls. No image is generated. |
 
 It checks: every required setting; the Neon database **and that every table exists** (a missing one names the
 migration file to run); the Telegram bot token, that a webhook is set and what Telegram's last delivery error was;
