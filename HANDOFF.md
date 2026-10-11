@@ -286,3 +286,20 @@ Findings and what was done:
   switch `MISTRAL_LARGE_MODEL=mistral-medium-3-5` (if the key can actually call it — /health live will say), or add a card to Mistral to unlock Large 4.
   OpenRouter `google/gemma-4-31b-it:free` returned 429 "Provider returned error" in two runs in a row (flaky upstream) — try `OPENROUTER_MODEL` = another :free id.
 
+### Fourth `/health live` + the owner's Mistral console screenshots (11 Oct 2026)
+- `TELEGRAM_BOT_USERNAME` fixed (now OK: @AskAssistAIBot). `MISTRAL_LARGE_MODEL=mistral-medium-3-5` was set: the key CAN call it (a plan block is 403;
+  it answered 429 "Rate limit exceeded" - likely the owner using the Mistral Playground in the same minute; free plan ~2 requests/min).
+- **Console model picker = what the key can use:** Codestral, Ministral 3B/8B/14B, Mistral Small 4, Mistral Medium (aliases mistral-medium, -3-5, -3.5, -3,
+  -2604, magistral-medium-latest, vibe-cli), Labs Leanstral. NO Large 3 / Large 4 (matches the 403s). The website assistant's "everything is usable"
+  was wrong for Large.
+- **Console prices ($/1M in/out):** Medium $2.70/$8.10; Codestral $0.30/$0.90; Ministral 14B $0.20/$0.20; Ministral 8B $0.15/$0.15; Ministral 3B $0.10/$0.10;
+  Small 4 $0.15/$0.60. The code's Small/14B/8B prices already matched. **Correction #2:** the Medium price I used from price-tracker sites ($1.50/$7.50)
+  was wrong - `mistralLargePrice()` now uses the console's $2.70/$8.10 (and unknown ids get the same). Lesson: take prices from the owner's console, not aggregators.
+- Defaults changed: Max model default `mistral-medium-3-5`; provider renamed "Mistral Max"; README/comments updated.
+- **Open design risk (not changed):** paid plans have `maxPerDay: null` (no per-user cap on Max, `lib/limits.js`) and the Mistral credit is ONE shared budget
+  (`lib/providerBudget.js`, $8.50). At ~$0.007-0.011 per Max reply (~800-1,200 a month) a few heavy Max users can exhaust it, which also turns off the cheap
+  Mistral fallbacks (Small / Ministral). Options: per-plan `maxPerDay` caps, or a sub-budget so Max may use at most ~$5 of the $8.50.
+- ModelScope: owner is creating a new token; the new UI offers Read-only / Write / Fine-grained / Admin. ModelScope's docs for these were not found; advice given
+  was least-privilege-first (Fine-grained with an inference permission if offered, else Read-only; never Admin) and verify with `/health live` (401 = wrong token,
+  403 = permission too low).
+

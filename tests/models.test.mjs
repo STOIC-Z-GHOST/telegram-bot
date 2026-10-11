@@ -25,6 +25,7 @@ check("empty string stays empty", cleanModelText("") === "");
 // ---- model choices
 const cat = providerCatalog();
 const ids = cat.openAiCompatible.map((r) => r.model);
+check("the Max provider is named for what it is, not 'Large'", cat.openAiCompatible.some((r) => r.tier === "max" && r.name === "Mistral Max"));
 check("no retired model ids remain", !ids.includes("llama-3.1-8b-instant") && !ids.includes("openai/gpt-oss-120b:free") && !ids.includes("qwen/qwen2.5-vl-32b-instruct:free"), ids.join(" | "));
 const flash = cat.openAiCompatible.find((r) => r.tier === "flash" && /groq/.test(r.baseUrl));
 check("fast mode's Groq model is gpt-oss-20b (Groq's own replacement)", flash.model === "openai/gpt-oss-20b");
@@ -73,14 +74,16 @@ console.log(JSON.stringify({ model: m.model, cost: m.cost.usdPerM }));
   const priceFor = (env) => JSON.parse(execFileSync(process.execPath, ["--no-deprecation", probe2], { env: { PATH: process.env.PATH, ...env }, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim().split("\n").pop());
   try {
     const dflt = priceFor({});
-    check("default Max model keeps Large 3's price ($0.50 / $1.50)", dflt.model === "mistral-large-2512" && dflt.cost.in === 0.5 && dflt.cost.out === 1.5, JSON.stringify(dflt));
+    check("default Max model is Medium 3.5 (Large 403s on a free key), priced per the Mistral console ($2.70 / $8.10)", dflt.model === "mistral-medium-3-5" && dflt.cost.in === 2.7 && dflt.cost.out === 8.1, JSON.stringify(dflt));
+    const l3 = priceFor({ MISTRAL_LARGE_MODEL: "mistral-large-2512" });
+    check("Large 3 keeps its own price if someone sets it ($0.50 / $1.50)", l3.cost.in === 0.5 && l3.cost.out === 1.5);
     const l4 = priceFor({ MISTRAL_LARGE_MODEL: "mistral-large-4" });
     check("switching to mistral-large-4 switches the budget guard to its LIST price ($1.36 / $4.18)", l4.cost.in === 1.36 && l4.cost.out === 4.18, JSON.stringify(l4));
-    const med = priceFor({ MISTRAL_LARGE_MODEL: "mistral-medium-3-5" });
-    check("mistral-medium-3-5 is priced at its real $1.50 / $7.50 (dearer than Large 4 on output)", med.cost.in === 1.5 && med.cost.out === 7.5, JSON.stringify(med));
+    const med = priceFor({ MISTRAL_LARGE_MODEL: "mistral-medium-latest" });
+    check("the -latest alias gets the Medium price too", med.cost.in === 2.7 && med.cost.out === 8.1, JSON.stringify(med));
     const unk = priceFor({ MISTRAL_LARGE_MODEL: "some-future-model" });
-    check("an unknown id gets the dearest price in the lineup, not a cheaper one", unk.cost.in >= 1.5 && unk.cost.out >= 7.5, JSON.stringify(unk));
-    check("no price is below the cheapest real one (guards against a typo in the table)", [dflt, l4, med, unk].every((x) => x.cost.in >= 0.5 && x.cost.out >= 1.5));
+    check("an unknown id gets the dearest price in the lineup, not a cheaper one", unk.cost.in >= 2.7 && unk.cost.out >= 8.1, JSON.stringify(unk));
+    check("Medium is dearer than Large 4 on both counts (so 'unknown = Medium' really is the safe side)", dflt.cost.in > l4.cost.in && dflt.cost.out > l4.cost.out);
   } finally {
     fs.rmSync(probe2, { force: true });
   }

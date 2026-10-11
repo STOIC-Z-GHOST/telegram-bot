@@ -26,6 +26,9 @@ Object.assign(process.env, KEYS);
 const { runHealthCheck, formatReport, splitReport, summarize, makeRedactor } = await import("../lib/health.js");
 const { providerCatalog } = await import("../lib/ai.js");
 const catalog = providerCatalog();
+const maxModel = catalog.openAiCompatible.find((r) => r.tier === "max").model; // Mistral Medium 3.5 by default (Large 403s on a free key)
+// A copy of the provider list with a different Max model (to replay what happened when Large was configured).
+const withMaxModel = (id) => ({ catalog: { ...catalog, openAiCompatible: catalog.openAiCompatible.map((r) => (r.tier === "max" ? { ...r, model: id } : r)) } });
 
 let pass = 0, fail = 0;
 const check = (label, cond, extra = "") => { (cond ? pass++ : fail++); console.log(cond ? "ok  " : "FAIL", label, extra); };
@@ -200,7 +203,8 @@ check("live: no separate '— live' lines any more", !res.some((r) => r.name.end
 check("live: Gemini live test uses ONLY the roomy lite model", posts.filter((p) => p.url.includes("generateContent")).length === 1 && posts.find((p) => p.url.includes("generateContent")).url.includes("gemini-3.5-flash-lite"), posts.filter((p) => p.url.includes("generateContent")).map((p) => p.url.split("/models/")[1]).join());
 check("live: never calls the 20/day primary Gemini model", !posts.some((p) => p.url.includes("gemini-3.6-flash")));
 check("live: Mistral gets exactly 2 requests (its free plan allows ~2/minute), not 4", posts.filter((p) => p.url.includes("api.mistral.ai")).length === 2);
-check("live: those 2 are the Max model and the cheapest", (() => { const m = posts.filter((p) => p.url.includes("api.mistral.ai")).map((p) => JSON.parse(p.body).model).sort(); return m.join() === ["ministral-8b-2512", "mistral-large-2512"].sort().join(); })());
+check("live: those 2 are the Max model and the cheapest", (() => { const m = posts.filter((p) => p.url.includes("api.mistral.ai")).map((p) => JSON.parse(p.body).model).sort(); return m.join() === ["ministral-8b-2512", maxModel].sort().join(); })());
+check("the default Max model is Medium 3.5", maxModel === "mistral-medium-3-5", maxModel);
 check("live: the other Mistral models say why they weren't asked", find(res, "Mistral", "mistral-small-2603")?.status === "ok" && /not live-tested: Mistral's free plan/.test(find(res, "Mistral", "mistral-small-2603").detail), find(res, "Mistral", "mistral-small-2603")?.detail);
 check("live: OpenRouter's image model says it was spared (50/day)", /not live-tested: to save/.test(find(res, "OpenRouter", "gemma-4-26b-a4b-it:free")?.detail || ""));
 check("live: OpenRouter spends exactly 1 of its 50/day", posts.filter((p) => p.url.includes("openrouter.ai")).length === 1);
@@ -274,7 +278,7 @@ check("Z.ai live: the key is then proved by the answer", find(res, "Z.ai", "API 
 // Mistral: id not in the list but its own address works (aliases) -> ok
 globalThis.fetch = makeFetch({ "api.mistral.ai/v1/models": (u) => (u.endsWith("/models") ? J({ data: [{ id: "mistral-small-2603" }] }) : null) });
 res = await run();
-check("Mistral: not in list but retrievable by id -> ok (aliases / access rules)", find(res, "Mistral", "mistral-large-2512")?.status === "ok");
+check("Mistral: not in list but retrievable by id -> ok (aliases / access rules)", find(res, "Mistral", maxModel)?.status === "ok");
 
 // OpenRouter: the free model is withdrawn ("unavailable for free")
 const orText = catalog.openAiCompatible.find((r) => r.tier === "standard" && /openrouter/.test(r.baseUrl)).model;
@@ -320,15 +324,22 @@ globalThis.fetch = makeFetch();
 
 // 403 "not available in your subscription tier" -> fail naming what the key CAN use (the list = what the plan offers)
 globalThis.fetch = makeFetch({
-  "api.mistral.ai/v1/models/mistral-large-2512": () => J({ error: { message: "not found" } }, 404),
+  "api.mistral.ai/v1/models/mistral-large-4": () => J({ error: { message: "not found" } }, 404),
   "api.mistral.ai/v1/models": (u) => (u.endsWith("/models") ? J({ data: [{ id: "ministral-14b-2512" }, { id: "ministral-8b-2512" }, { id: "mistral-small-2603" }, { id: "mistral-medium-3-5" }] }) : null),
-  "api.mistral.ai/v1/chat/completions": (u, o) => (JSON.parse(o.body).model === "mistral-large-2512" ? J({ message: "This model is not available in your subscription tier" }, 403) : null),
+  "api.mistral.ai/v1/chat/completions": (u, o) => (JSON.parse(o.body).model === "mistral-large-4" ? J({ message: "This model is not available in your subscription tier" }, 403) : null),
 });
-res = await run({ live: true });
-const ml = find(res, "Mistral", "mistral-large-2512");
-check("Mistral Large 403 -> fail saying the PLAN blocks it (not 'key rejected')", ml?.status === "fail" && /not allowed on your plan \(HTTP 403\): .*subscription tier/.test(ml.detail) && !/key rejected/.test(ml.detail), ml?.detail);
+res = await run({ live: true }, withMaxModel("mistral-large-4"));
+const ml = find(res, "Mistral", "mistral-large-4");
+check("Mistral Large 4 configured -> 403 -> fail saying the PLAN blocks it (not 'key rejected')", ml?.status === "fail" && /not allowed on your plan \(HTTP 403\): .*subscription tier/.test(ml.detail) && !/key rejected/.test(ml.detail), ml?.detail);
 check("...and lists what the plan CAN use, bigger models first", /Models your key can list, for example: mistral-medium-3-5/.test(ml.detail), ml?.detail);
 check("...and does not blame the key as a whole", find(res, "Mistral", "API key")?.status === "ok" && find(res, "Mistral", "ministral-8b-2512")?.status === "ok");
+
+// Third real run: Medium 3.5 answered 429 "Rate limit exceeded" -> accessible (a plan block would be 403), just busy
+globalThis.fetch = makeFetch({ "api.mistral.ai/v1/chat/completions": (u, o) => (JSON.parse(o.body).model === maxModel ? J({ message: "Rate limit exceeded" }, 429) : null) });
+res = await run({ live: true });
+const med429 = find(res, "Mistral", maxModel);
+check("Max model 429 -> WARN that the key works (it can call the model), not a plan failure", med429?.status === "warn" && /rate-limited right now/.test(med429.detail) && /Rate limit exceeded/.test(med429.detail) && !/plan/.test(med429.detail), med429?.detail);
+check("...and the cheap model is still tested and fine", find(res, "Mistral", "ministral-8b-2512")?.status === "ok");
 
 // 429 now carries the provider's own words so you can tell "daily cap" from "busy upstream"
 globalThis.fetch = makeFetch({ "openrouter.ai/api/v1/chat/completions": () => J({ error: { message: "Provider returned error: google/gemma-4-31b-it:free is temporarily rate-limited upstream" } }, 429) });
