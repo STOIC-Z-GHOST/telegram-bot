@@ -272,4 +272,9 @@ Findings and what was done:
   stay active, so this is a watch item, not an outage. If it ever stops, `CF_FLASH_MODEL=@cf/meta/llama-3.3-70b-instruct-fp8-fast` still exists but costs
   ~6x the neurons per request.
 - `TELEGRAM_BOT_USERNAME` still mismatched (needs the owner to change the env var).
+- **Mistral Large follow-up.** The 403 is Mistral's own answer for the exact id `mistral-large-2512`; the owner pointed out Mistral's website
+  assistant says all models (incl. Large 3 / Large 4 / Medium 3.5) are usable on the free $10 credit. Both can be true — the assistant talks about model
+  families, the API about one id; Large 4 (`mistral-large-4`, public preview) launched 6 Oct 2026, so the older id may simply have been restricted. The
+  cause is NOT established; the test is `MISTRAL_LARGE_MODEL=mistral-large-4` + `/health live`. `mistralLargePrice()` in `lib/ai.js` now makes the
+  budget guard follow the model (Large 4 = list price $1.36/$4.18, unknown ids = the same) — before this it hard-coded Large 3's $0.50/$1.50.
 

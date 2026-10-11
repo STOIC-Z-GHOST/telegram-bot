@@ -61,5 +61,27 @@ try {
   fs.rmSync(probe, { force: true });
 }
 
+// ---- the Max model's price feeds the monthly-budget guard: it must follow the model
+{
+  const probe2 = path.join(path.dirname(fileURLToPath(import.meta.url)), "_probe_price.mjs");
+  fs.writeFileSync(probe2, `
+process.env.DATABASE_URL ||= "postgres://u:p@localhost.invalid/db";
+const { providerCatalog } = await import("../lib/ai.js");
+const m = providerCatalog().openAiCompatible.find((r) => r.tier === "max");
+console.log(JSON.stringify({ model: m.model, cost: m.cost.usdPerM }));
+`);
+  const priceFor = (env) => JSON.parse(execFileSync(process.execPath, ["--no-deprecation", probe2], { env: { PATH: process.env.PATH, ...env }, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim().split("\n").pop());
+  try {
+    const dflt = priceFor({});
+    check("default Max model keeps Large 3's price ($0.50 / $1.50)", dflt.model === "mistral-large-2512" && dflt.cost.in === 0.5 && dflt.cost.out === 1.5, JSON.stringify(dflt));
+    const l4 = priceFor({ MISTRAL_LARGE_MODEL: "mistral-large-4" });
+    check("switching to mistral-large-4 switches the budget guard to its LIST price ($1.36 / $4.18)", l4.cost.in === 1.36 && l4.cost.out === 4.18, JSON.stringify(l4));
+    const unk = priceFor({ MISTRAL_LARGE_MODEL: "some-future-model" });
+    check("an unknown id is priced high, not low (safe side)", unk.cost.in >= 1.36 && unk.cost.out >= 4.18);
+  } finally {
+    fs.rmSync(probe2, { force: true });
+  }
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
