@@ -277,4 +277,12 @@ Findings and what was done:
   families, the API about one id; Large 4 (`mistral-large-4`, public preview) launched 6 Oct 2026, so the older id may simply have been restricted. The
   cause is NOT established; the test is `MISTRAL_LARGE_MODEL=mistral-large-4` + `/health live`. `mistralLargePrice()` in `lib/ai.js` now makes the
   budget guard follow the model (Large 4 = list price $1.36/$4.18, unknown ids = the same) — before this it hard-coded Large 3's $0.50/$1.50.
+- **Third `/health live` (11 Oct 2026): `mistral-large-4` ALSO returns 403 "not available in your subscription tier"** on the free key — so Large-class
+  models are gated on this key (the website assistant's "everything is usable" does not hold for Large). The key's model list offers `mistral-medium-*`
+  (3-5, 3.5, 3, 2604, -latest). Medium 3.5 = $1.50 in / $7.50 out per million (price-tracker sites quoting Mistral's list), i.e. DEARER than Large 4
+  ($1.36/$4.18 list, ~$0.68/$2.09 on the launch sale) — ~$8 per 1,000 average Max replies, ~1,000 replies for the $8.50 guard.
+  Correction: `mistralLargePrice()` previously priced unknown ids at Large 4's $1.36/$4.18, which would have UNDER-counted Medium 3.5's output by ~1.8x;
+  unknown ids and `mistral-medium-*` now get $1.50/$7.50. Open decision for the owner: leave Max = Standard (Large keeps 403-ing, then the chain moves on),
+  switch `MISTRAL_LARGE_MODEL=mistral-medium-3-5` (if the key can actually call it — /health live will say), or add a card to Mistral to unlock Large 4.
+  OpenRouter `google/gemma-4-31b-it:free` returned 429 "Provider returned error" in two runs in a row (flaky upstream) — try `OPENROUTER_MODEL` = another :free id.
 

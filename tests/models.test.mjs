@@ -76,8 +76,11 @@ console.log(JSON.stringify({ model: m.model, cost: m.cost.usdPerM }));
     check("default Max model keeps Large 3's price ($0.50 / $1.50)", dflt.model === "mistral-large-2512" && dflt.cost.in === 0.5 && dflt.cost.out === 1.5, JSON.stringify(dflt));
     const l4 = priceFor({ MISTRAL_LARGE_MODEL: "mistral-large-4" });
     check("switching to mistral-large-4 switches the budget guard to its LIST price ($1.36 / $4.18)", l4.cost.in === 1.36 && l4.cost.out === 4.18, JSON.stringify(l4));
+    const med = priceFor({ MISTRAL_LARGE_MODEL: "mistral-medium-3-5" });
+    check("mistral-medium-3-5 is priced at its real $1.50 / $7.50 (dearer than Large 4 on output)", med.cost.in === 1.5 && med.cost.out === 7.5, JSON.stringify(med));
     const unk = priceFor({ MISTRAL_LARGE_MODEL: "some-future-model" });
-    check("an unknown id is priced high, not low (safe side)", unk.cost.in >= 1.36 && unk.cost.out >= 4.18);
+    check("an unknown id gets the dearest price in the lineup, not a cheaper one", unk.cost.in >= 1.5 && unk.cost.out >= 7.5, JSON.stringify(unk));
+    check("no price is below the cheapest real one (guards against a typo in the table)", [dflt, l4, med, unk].every((x) => x.cost.in >= 0.5 && x.cost.out >= 1.5));
   } finally {
     fs.rmSync(probe2, { force: true });
   }
