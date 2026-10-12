@@ -303,3 +303,26 @@ Findings and what was done:
   was least-privilege-first (Fine-grained with an inference permission if offered, else Read-only; never Admin) and verify with `/health live` (401 = wrong token,
   403 = permission too low).
 
+### Max-mode cost protection (11 Oct 2026) — answer to "can one user exhaust the Mistral credit?"
+YES, and before this change nothing stopped it: Pro/Premium had `maxPerDay: null`; the only per-user bound was the monthly TOKEN allowance
+(Pro 1.8M, Premium 4.5M, counted as the provider's `total_tokens`), which at Medium 3.5 prices is $5.83-$9.72 (Pro) / $14.58-$24.30 (Premium) if spent
+entirely on Max, vs the $8.50 guard. The guard is monthly-only (no daily pacing) and shared, so when it tripped ALL Mistral models (incl. the cheap
+Small/Ministral fallbacks) switched off for everyone.
+Built: (1) per-user daily Max caps for paid plans (`TIER_LIMITS.pro/premium.maxPerDay` = 5 / 10 via `MAX_PER_DAY_PRO` / `MAX_PER_DAY_PREMIUM`, `unlimited`
+removes it; the over-cap message no longer says "trial"); (2) a sub-budget `mistral_max` (`MISTRAL_MAX_BUDGET_USD`, default $5 of $8.50) —
+`budgetsOf(provider)` in `lib/providerBudget.js`; `providerUsable` checks and `trackSpend` charges EVERY budget a provider declares (`budget` + `subBudget`);
+(3) `/health` "Budgets" group (spent / cap per pot, warn at 70%, says what happens at 100%). No migration (new `usage_events` kind `mistral_max_microusd`, site user 0).
+Capacity reality: $5 ~ 450-700 Max replies/month for the whole bot (~15-23/day). The defaults (5/10 per day) are a PROPOSAL — a handful of capped users can still
+spend the slice; the real fix for more Max is a paid Mistral plan. NOT done: showing paid users a Max usage bar (only the over-cap message), a Max row in the in-app
+plan comparison table (`public/miniapp/index.html`, "+ Max" with no number), per-user fairness inside the slice (first come, first served).
+Tests: `tests/budgets.test.mjs` (19 checks incl. wiring guards), health tests for the Budgets group.
+
+### Max limit shown to users (12 Oct 2026) + ModelScope
+- `api/miniapp/usage.js` now returns `max: { perDay, used, resetAt }` (only when the plan's `maxPerDay > 0`); `maxUsageLast24h()` / the pure `maxWindowStatus()` in `lib/limits.js`
+  (blocked iff used >= cap; room frees when the (used - cap + 1)-th oldest `max_tier` event passes 24h). `public/miniapp/index.html`: a "Max replies" bar in the menu footer
+  (same `paintUsageLine`, so amber at 80% / red + countdown when full) and a "Max replies/day" row in Compare plans (reads `plans.limits.*.maxPerDay`: 0 = "—", null = "Unlimited").
+  Verified by running the REAL page in jsdom for Free / Pro 2-of-5 / 4-of-5 / at-cap / Premium / uncapped (`tests/ui-max-bar.test.cjs`, 11 checks; jsdom is NOT a dependency — `npm i --no-save jsdom`).
+- ModelScope: the owner's theory (needs Alibaba Cloud binding) is probably right for the NEXT error, but their 401 ("Authentication failed ... valid ModelScope token") was a different one — an invalid token.
+  Two third-party guides say the free API needs an Alibaba Cloud account bound AND real-name verified (error text: "401 please bind your alibaba cloud account before use"; phone verification is real friction
+  for international users). `/health` now translates that message and offers the way out (unset `MODELSCOPE_API_KEY`). It is the 5th image fallback (after Gemini, Cloudflare Gemma, OpenRouter Gemma, Z.ai) — recommended: skip it.
+

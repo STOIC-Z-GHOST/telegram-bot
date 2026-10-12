@@ -403,6 +403,28 @@ limit is an error, a natural-language guess over its limit falls back to a norma
 - **Not built:** PowerPoint output / editing, PDF editing, Word->PDF conversion (impossible on
   Vercel). Editing uploaded files (Phases 2 and 3) is in the next section.
 
+## Protecting the shared Mistral credit (Max mode)
+
+Max mode runs on Mistral Medium 3.5 at $2.70 in / $8.10 out per million tokens — 20-50x a Ministral
+reply — and Mistral's free plan is ONE $10/month credit shared by every model and every user. A plan's
+monthly token allowance alone doesn't protect it: one Pro user putting their whole 1.8M tokens into Max
+would cost $5.83-$9.72 (69-114% of the $8.50 guard), one Premium user $14.58-$24.30. So there are two layers:
+
+1. **Per-user daily cap** on Max replies for every plan that has it (Pro 5, Premium 10; trials lower).
+   `MAX_PER_DAY_PRO`, `MAX_PER_DAY_PREMIUM`; `unlimited` removes a cap (only sensible once Mistral is on a paid plan).
+2. **A site-wide slice for Max** — `MISTRAL_MAX_BUDGET_USD` (default $5 of the $8.50). Every Max call counts against
+   both the whole credit and this slice; when the slice is spent, Max requests run on the Standard chain and the
+   cheap models (Mistral Small, Ministral) keep the remaining ~$3.50.
+
+In plain numbers: $5 buys roughly 450-700 Max replies a month for the WHOLE bot — about 15-23 a day. That is what
+the free credit can fund; if paying users should get more, Mistral needs a paid plan (and then raise the caps).
+`/health` shows how much of each budget is used (the **Budgets** group).
+
+**What users see:** a "Max replies" bar in the app's menu (only on plans that have a Max cap — "2 / 5 · last 24h",
+amber at 80%, red with a "next Max reply in …" countdown when full) and a "Max replies/day" row in Compare plans.
+Both read the server's numbers, so changing `MAX_PER_DAY_*` changes what users see with no front-end edit.
+Test the page itself with `npm install --no-save jsdom` then `node tests/ui-max-bar.test.cjs` (skips if jsdom is absent).
+
 ## Health check: are the keys and models really connected?
 
 Two ways to run the same check (`lib/health.js`):
@@ -521,9 +543,10 @@ deploying** — starting a trial writes to the new `plan_trials` table.
   once per account (primary key on `plan_trials`).
 - `TRIAL_DAILY_START_CAP` (default 20) limits new trials per rolling 24h across
   everyone, which bounds what second accounts can cost the shared free quotas.
-- Max-model replies are the costly ones (~$0.0014 each against Mistral's shared
-  $10 credit), so trials cap them per day; over the cap a reply runs on Standard
-  with a one-line note. Paid Pro/Premium have no per-user cap.
+- Max-model replies are the costly ones (Mistral Medium 3.5, roughly $0.007-0.011
+  each against Mistral's shared $10 credit), so EVERY plan that has Max caps them
+  per day — trials 2 / 5, Pro 5, Premium 10 (`MAX_PER_DAY_PRO` / `MAX_PER_DAY_PREMIUM`,
+  or `unlimited`); over the cap a reply runs on Standard with a one-line note.
 - A banner reminder appears once per visit when 2 days or fewer remain.
 - Numbers live in `TRIAL_KINDS` in `lib/limits.js`; the Plan sheet reads them
   from the server, so changing them there changes what users see.
@@ -558,6 +581,7 @@ owner, are exempt from all of it:
 | Token allowance | 300,000 / 30 days | 1,800,000 / 30 days | 4,500,000 / 30 days |
 | File size cap | 5MB | 200MB | 500MB |
 | Images per message | 5 | 10 | 20 |
+| Max-model replies | not included | 5 / day | 10 / day |
 | Attachments per chat (lifetime) | 2 | 100 | 100,000 (shown to users as "Unlimited") |
 | Image generations | 3 / 30 days | 10 / 30 days | 1000 / 30 days (shown to users as "Unlimited") |
 | `/think` uses | 3 / day | 15 / day | 40 / day |

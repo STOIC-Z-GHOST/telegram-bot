@@ -7,7 +7,7 @@
 import { requireTelegramUser } from "../../lib/telegramAuth.js";
 import { isOwner } from "../../lib/access.js";
 import { getSubscriptionInfo } from "../../lib/subscriptions.js";
-import { getUsageSummary, TIER_LIMITS, TRIAL_KINDS, TOKEN_WINDOW_DAYS, limitsFor, countVoiceLast24h, messagesFreeAt, tokensFreeAt } from "../../lib/limits.js";
+import { getUsageSummary, TIER_LIMITS, TRIAL_KINDS, TOKEN_WINDOW_DAYS, limitsFor, countVoiceLast24h, messagesFreeAt, tokensFreeAt, maxUsageLast24h } from "../../lib/limits.js";
 import { PRO_ONLY_EXTS } from "../../lib/fileTypes.js";
 import { getCreditedReferralCount, getNextMilestone, referralCodeFor, inviteLinkFor } from "../../lib/referrals.js";
 
@@ -92,6 +92,13 @@ export default async function handler(req, res) {
   ]);
   body.messagesResetAt = messagesResetAt ? messagesResetAt.toISOString() : null;
   body.tokensResetAt = tokensResetAt ? tokensResetAt.toISOString() : null;
+
+  // Max replies today — only for a plan that has Max AND a daily cap (Free has none; "unlimited" has nothing to
+  // show). The menu draws a bar from this, with the same "next one in …" countdown when it is full.
+  if (limits.maxPerDay > 0) {
+    const m = await maxUsageLast24h(user.id, limits.maxPerDay);
+    body.max = { perDay: limits.maxPerDay, used: m.used, resetAt: m.resetAt ? m.resetAt.toISOString() : null };
+  }
 
   if (tier === "free") {
     const creditedReferrals = await getCreditedReferralCount(user.id);

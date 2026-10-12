@@ -1509,6 +1509,10 @@
         <div class="usage-line-top"><span class="usage-line-label">Messages</span><span class="usage-line-text" id="usage-messages-text"></span></div>
         <div class="usage-bar"><div class="usage-bar-fill" id="usage-messages-fill"></div></div>
       </div>
+      <div class="usage-line" id="usage-max-line" hidden>
+        <div class="usage-line-top"><span class="usage-line-label">Max replies</span><span class="usage-line-text" id="usage-max-text"></span></div>
+        <div class="usage-bar"><div class="usage-bar-fill" id="usage-max-fill"></div></div>
+      </div>
       <div class="usage-line" id="usage-tokens-line">
         <div class="usage-line-top"><span class="usage-line-label">Tokens</span><span class="usage-line-text" id="usage-tokens-text"></span></div>
         <div class="usage-bar"><div class="usage-bar-fill" id="usage-tokens-fill"></div></div>
@@ -1671,6 +1675,9 @@
   const usageMessagesLineEl = document.getElementById("usage-messages-line");
   const usageMessagesTextEl = document.getElementById("usage-messages-text");
   const usageMessagesFillEl = document.getElementById("usage-messages-fill");
+  const usageMaxLineEl = document.getElementById("usage-max-line");
+  const usageMaxTextEl = document.getElementById("usage-max-text");
+  const usageMaxFillEl = document.getElementById("usage-max-fill");
   const usageTokensLineEl = document.getElementById("usage-tokens-line");
   const usageTokensTextEl = document.getElementById("usage-tokens-text");
   const usageTokensFillEl = document.getElementById("usage-tokens-fill");
@@ -1983,6 +1990,20 @@
       resetAt: d.messagesResetAt,
       resetPrefix: "next message in",
     }) || counting;
+
+    // Max replies: the server only sends this for a plan that has Max with a daily cap.
+    if (d.max && d.max.perDay > 0) {
+      usageMaxLineEl.hidden = false;
+      counting = paintUsageLine(usageMaxLineEl, usageMaxFillEl, usageMaxTextEl, {
+        used: d.max.used,
+        limit: d.max.perDay,
+        normalText: `${d.max.used} / ${d.max.perDay} · last 24h`,
+        resetAt: d.max.resetAt,
+        resetPrefix: "next Max reply in",
+      }) || counting;
+    } else {
+      usageMaxLineEl.hidden = true;
+    }
 
     const tokWindow = d.tokenWindowDays === 1 ? "last 24h" : `last ${d.tokenWindowDays} days`;
     counting = paintUsageLine(usageTokensLineEl, usageTokensFillEl, usageTokensTextEl, {
@@ -2567,11 +2588,14 @@
       // "3 clips · 1.5 min" — total audio per day matters more than per-clip length.
       const voiceMinutes = (t) => `${t.voicePerDay} clips · ${Math.round((t.voiceSecondsPerDay / 60) * 10) / 10} min`;
       const tok = (n) => (n >= 1000000 ? `${n / 1000000}M` : `${n / 1000}K`);
+      // Max replies per day: 0 = not included, null = no cap, otherwise the number (the server decides — env-tunable).
+      const maxDay = (t) => (t.maxPerDay == null ? "Unlimited" : t.maxPerDay > 0 ? `${t.maxPerDay}` : "—");
       planDetailsTableEl.innerHTML = `
         <table class="plan-table">
           <tr><th></th><th>Free</th><th>Pro</th><th>Premium</th></tr>
           <tr><td>Price</td><td>$0</td><td>${plans.prices.pro} ⭐</td><td>${plans.prices.premium} ⭐</td></tr>
           <tr><td>Model tiers</td><td>Flash, Standard</td><td>+ Max</td><td>+ Extra</td></tr>
+          <tr><td>Max replies/day</td><td>${maxDay(free)}</td><td>${maxDay(pro)}</td><td>${maxDay(premium)}</td></tr>
           <tr><td>Msgs</td><td>${free.messagesPerDay}/day</td><td>${pro.messagesPerHour}/hr</td><td>Unlimited</td></tr>
           <tr><td>Tokens/mo</td><td>${tok(free.maxTokens)}</td><td>${tok(pro.maxTokens)}</td><td>${tok(premium.maxTokens)}</td></tr>
           <tr><td>Files</td><td>${mb(free.maxFileBytes)}</td><td>${mb(pro.maxFileBytes)}</td><td>${mb(premium.maxFileBytes)}</td></tr>

@@ -74,7 +74,8 @@ function makeFetch(overrides = {}) {
   };
 }
 const realFetch = globalThis.fetch;
-const deps = { catalog, dbTables: async () => ["a", "b"], expectedTables: async () => ["a", "b"], blobList: async () => {} };
+const budgets = (m = 1_200_000, mx = 400_000, cf = 2_000) => async () => ({ mistral: { spent: m, cap: 8_500_000 }, mistral_max: { spent: mx, cap: 5_000_000 }, cloudflare: { spent: cf, cap: 9_000 } });
+const deps = { catalog, dbTables: async () => ["a", "b"], expectedTables: async () => ["a", "b"], blobList: async () => {}, budgetStatus: budgets() };
 // The provider list is built from the keys present at import time, so a "key removed" scenario
 // must remove it from the list too (in production env and list always agree).
 const withoutKeys = (re) => ({ catalog: { ...catalog, openAiCompatible: catalog.openAiCompatible.map((r) => (re.test(r.name) ? { ...r, apiKey: undefined } : r)) } });
@@ -256,13 +257,13 @@ check("CF model missing from catalog but answering live -> warn 'probably deprec
 check("(that is the 8B model from the first real run)", /llama-3\.1-8b/.test(cf8b));
 
 // ModelScope-style: public list, key actually rejected -> quick says "unverified", live says rejected WITH the provider's message
-const msChat = (u, o) => (u.endsWith("/chat/completions") ? J({ error: { message: "Invalid token. Please bind your Alibaba Cloud account." } }, 401) : null);
+const msChat = (u, o) => (u.endsWith("/chat/completions") ? J({ error: { message: "Authentication failed, please make sure that a valid ModelScope token is supplied." } }, 401) : null);
 globalThis.fetch = makeFetch({ "api-inference.modelscope.cn": msChat });
 res = await run();
 check("ModelScope quick: key NOT reported as valid", find(res, "ModelScope", "API key")?.status === "warn");
 res = await run({ live: true });
 const msKey = find(res, "ModelScope", "API key");
-check("ModelScope live: key fail, with the provider's own message", msKey?.status === "fail" && /key rejected \(HTTP 401\).*Alibaba Cloud/.test(msKey.detail), msKey?.detail);
+check("ModelScope live: invalid token -> key fail, with ModelScope's own (real) message", msKey?.status === "fail" && /key rejected \(HTTP 401\): Authentication failed.*valid ModelScope token/.test(msKey.detail) && !/real-name/.test(msKey.detail), msKey?.detail);
 check("...and the model line carries the failure too", find(res, "ModelScope", "Qwen/")?.status === "fail");
 
 // Z.ai-style: partial public list (model absent) but it answers -> ok, noted; quick -> warn only
@@ -353,6 +354,38 @@ globalThis.fetch = makeFetch({ "s.example.org": async () => { throw Object.assig
 res = await run({}, {}, sx);
 const sxl = find(res, "Search", "SearXNG");
 check("SearXNG timeout -> fail that explains the cost and the fix", sxl?.status === "fail" && /probably asleep/.test(sxl.detail) && /up to 9s/.test(sxl.detail) && /unset SEARXNG_URL/.test(sxl.detail), sxl?.detail);
+globalThis.fetch = makeFetch();
+
+
+// ModelScope's other 401: valid token, but the Alibaba Cloud account isn't bound / real-name verified
+globalThis.fetch = makeFetch({ "api-inference.modelscope.cn": (u) => (u.endsWith("/chat/completions") ? J({ error: { message: "401 please bind your alibaba cloud account before use" } }, 401) : null) });
+res = await run({ live: true });
+const msBind = find(res, "ModelScope", "API key");
+check("ModelScope 'bind your alibaba cloud account' -> plain-English fix, incl. the way out", msBind?.status === "fail" && /bound and real-name verified/.test(msBind.detail) && /remove MODELSCOPE_API_KEY/.test(msBind.detail), msBind?.detail);
+check("...and it is told apart from a plainly invalid token", !/real-name/.test(find(res, "Mistral", "API key")?.detail || ""));
+globalThis.fetch = makeFetch();
+
+// ===== 13d. spend budgets (can one heavy user drain the shared Mistral credit?) =====
+globalThis.fetch = makeFetch();
+res = await run();
+const bm = find(res, "Budgets", "Mistral credit"), bx = find(res, "Budgets", "Max mode's slice"), bc = find(res, "Budgets", "Cloudflare");
+check("budgets: healthy -> ok lines with dollars", bm?.status === "ok" && /\$1\.20 of \$8\.50 \(14%\)/.test(bm.detail) && bx?.status === "ok" && /\$0\.40 of \$5\.00 \(8%\)/.test(bx.detail), `${bm?.detail} | ${bx?.detail}`);
+check("budgets: Cloudflare shown in neurons", bc?.status === "ok" && /2,000 neurons of 9,000 neurons/.test(bc.detail), bc?.detail);
+res = await run({}, { budgetStatus: budgets(1_200_000, 3_800_000) });
+check("budgets: Max slice at 76% -> warn 'getting close'", find(res, "Budgets", "Max mode's slice")?.status === "warn" && /getting close/.test(find(res, "Budgets", "Max mode's slice").detail));
+res = await run({}, { budgetStatus: budgets(1_200_000, 5_000_000) });
+const spentMax = find(res, "Budgets", "Max mode's slice");
+check("budgets: Max slice used up -> warn that says what happens (Max -> Standard, cheap models unaffected)", spentMax?.status === "warn" && /used up/.test(spentMax.detail) && /Standard chain/.test(spentMax.detail) && /unaffected/.test(spentMax.detail), spentMax?.detail);
+check("...while the pot itself is still fine", find(res, "Budgets", "Mistral credit")?.status === "ok");
+res = await run({}, { budgetStatus: budgets(8_500_000, 5_000_000) });
+check("budgets: whole credit used up -> says all Mistral models are off until next month", /switched off until next month/.test(find(res, "Budgets", "Mistral credit").detail));
+res = await run({}, { budgetStatus: async () => { throw new Error("connection to postgres://user:pw@localhost.invalid/db refused"); } });
+check("budgets: a read failure is a warning (scrubbed), never a crash", find(res, "Budgets", "Spend guards")?.status === "warn" && !JSON.stringify(res).includes("postgres://user:pw"));
+const noDb = { ...process.env }; delete noDb.DATABASE_URL;
+res = await run({}, {}, noDb);
+check("budgets: no database configured -> skipped, not an error", find(res, "Budgets", "Spend guards")?.status === "skip");
+res = await run({}, { budgetStatus: async () => ({ mistral: { spent: null, cap: 8_500_000 } }) });
+check("budgets: an unreadable value is flagged, not shown as $0", find(res, "Budgets", "Mistral credit")?.status === "warn" && /couldn't be read/.test(find(res, "Budgets", "Mistral credit").detail));
 globalThis.fetch = makeFetch();
 
 // ===== 14. formatting =====
