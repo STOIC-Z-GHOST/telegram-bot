@@ -50,13 +50,13 @@ function makeFetch(overrides = {}) {
     }
     if (url.includes("api.telegram.org") && url.endsWith("/getMe")) return J({ ok: true, result: { username: "chat_assistai_bot" } });
     if (url.includes("api.telegram.org") && url.endsWith("/getWebhookInfo")) return J({ ok: true, result: { url: "https://demo.vercel.app/api/telegram-webhook", pending_update_count: 0 } });
-    if (url.includes("generativelanguage.googleapis.com")) return method === "POST" ? J({ candidates: [{ content: { parts: [{ text: "OK" }] } }] }) : J({ name: "models/x" });
+    if (url.includes("generativelanguage.googleapis.com")) return method === "POST" ? J({ candidates: [{ content: { parts: [{ text: /inline_data/.test(opts.body || "") ? "Red" : "OK" }] } }] }) : J({ name: "models/x" });
     if (url.includes("openrouter.ai/api/v1/auth/key")) return J({ data: { is_free_tier: true } });
     if (url.includes("openrouter.ai/api/v1/models")) return J({ data: hostIds("openrouter.ai").map((id) => ({ id })) });
     if (url.includes("api.cloudflare.com") && url.includes("/user/tokens/verify")) return J({ success: true, result: { status: "active" } });
     if (url.includes("api.cloudflare.com") && url.includes("/tokens/verify")) return J({ success: false }, 403);
     if (url.includes("api.cloudflare.com") && url.includes("/ai/models/search")) return J({ result: cfNames.map((name) => ({ name })) });
-    if (url.endsWith("/chat/completions")) return J({ choices: [{ message: { content: "OK" } }] });
+    if (url.endsWith("/chat/completions")) return J({ choices: [{ message: { content: /image_url/.test(opts.body || "") ? "Red." : "OK" } }] });
     {
       const u = new URL(url);
       const idsFor = (host) => { const ids = hostIds(host); if (host === "api.groq.com") ids.push("whisper-large-v3-turbo"); return ids; };
@@ -209,7 +209,7 @@ check("the default Max model is Medium 3.5", maxModel === "mistral-medium-3-5", 
 check("live: the other Mistral models say why they weren't asked", find(res, "Mistral", "mistral-small-2603")?.status === "ok" && /not live-tested: Mistral's free plan/.test(find(res, "Mistral", "mistral-small-2603").detail), find(res, "Mistral", "mistral-small-2603")?.detail);
 check("live: OpenRouter's image model says it was spared (50/day)", /not live-tested: to save/.test(find(res, "OpenRouter", "gemma-4-26b-a4b-it:free")?.detail || ""));
 check("live: OpenRouter spends exactly 1 of its 50/day", posts.filter((p) => p.url.includes("openrouter.ai")).length === 1);
-check("live: Cloudflare text + flash + vision answer", res.filter((r) => r.group === "Cloudflare Workers AI" && /answered in/.test(r.detail) && r.status === "ok").length === 3);
+check("live: Cloudflare text + flash + vision answer", res.filter((r) => r.group === "Cloudflare Workers AI" && /(answered|read the test image) in/.test(r.detail) && r.status === "ok").length === 3);
 check("live: no image is generated (no CF /ai/run call)", !posts.some((p) => /\/ai\/run\//.test(p.url)));
 check("live report says so", /each model was asked/.test(formatReport(res, { live: true })));
 globalThis.fetch = makeFetch({ "api.groq.com/openai/v1/chat/completions": () => J({ error: { message: "rate limit reached" } }, 429) });
@@ -396,6 +396,99 @@ check("splitReport: every part under the limit", parts.every((p) => p.length <= 
 check("splitReport: nothing lost", parts.join("\n\n") === big);
 check("full live report fits in a few Telegram messages", splitReport(big).length <= 4, `${big.length} chars -> ${splitReport(big).length} message(s)`);
 check("redactor ignores short/non-secret values", makeRedactor({ BOT_NAME: "Assist AI", X_KEY: "short" })("Assist AI short") === "Assist AI short");
+
+// ===== 15. regressions from the THIRD real /health live run (a reply that was not OK) =====
+{
+  const { judgeProbeReply } = await import("../lib/health.js");
+  check("judgeProbeReply: OK / OK. / **OK** / Okay are recognised", ["OK", "OK.", "**OK**", " ok\n", "Okay!"].every((t) => judgeProbeReply(t) === "ok"));
+  check("judgeProbeReply: filler is garbled", ["!!!!!!!!!!!!!!!!!!!!!!!!", "......", "-- -- -- --", "aaaaaaa"].every((t) => judgeProbeReply(t) === "garbled"));
+  check("judgeProbeReply: a chatty or off-topic reply is unexpected", judgeProbeReply("Hello! How can I help you today?") === "unexpected" && judgeProbeReply("The user wants me to reply OK, so here is a very long explanation of that request") === "unexpected");
+  check("judgeProbeReply: nothing is empty", judgeProbeReply("  ") === "empty" && judgeProbeReply(null) === "empty");
+
+  globalThis.fetch = makeFetch({ "api.cloudflare.com": chatReply("!!!!!!!!!!!!!!!!!!!!!!!!") });
+  res = await run({ live: true });
+  const bang = find(res, "Cloudflare Workers AI", cfStd);
+  check("the real '!!!!' reply from Cloudflare gpt-oss-120b -> WARN, not a green tick", bang?.status === "warn" && /filler/.test(bang.detail) && /!!!!/.test(bang.detail), bang?.detail);
+  globalThis.fetch = makeFetch({ "api.cloudflare.com": chatReply("Hello! How can I help you today?") });
+  res = await run({ live: true });
+  const chat = find(res, "Cloudflare Workers AI", cfStd);
+  check("a model that answers something else -> WARN 'not with OK'", chat?.status === "warn" && /not with OK/.test(chat.detail), chat?.detail);
+  globalThis.fetch = makeFetch({ "api.cloudflare.com": chatReply("OK") });
+  res = await run({ live: true });
+  check("a plain OK is still a green tick", find(res, "Cloudflare Workers AI", cfStd)?.status === "ok");
+
+  // Gemini live test: 200 with no text used to be a green tick
+  globalThis.fetch = makeFetch({ "generativelanguage.googleapis.com": (u, o) => (o.method === "POST" ? J({ candidates: [{ content: { parts: [] }, finishReason: "MAX_TOKENS" }] }) : null) });
+  res = await run({ live: true });
+  const gem0 = find(res, "Gemini", "live test");
+  check("Gemini answers 200 but with no text -> WARN with the finish reason", gem0?.status === "warn" && /no text/.test(gem0.detail) && /MAX_TOKENS/.test(gem0.detail), gem0?.detail);
+  globalThis.fetch = makeFetch({ "generativelanguage.googleapis.com": (u, o) => (o.method === "POST" ? J({ candidates: [{ content: { parts: [{ text: "???????????" }] } }] }) : null) });
+  res = await run({ live: true });
+  check("Gemini answers filler -> WARN", find(res, "Gemini", "live test")?.status === "warn");
+
+  // The three repeating warnings now say WHY
+  globalThis.fetch = makeFetch({ "generativelanguage.googleapis.com": (u, o) => (o.method === "POST" ? J({ error: { code: 503, message: "This model is currently experiencing high demand.", status: "UNAVAILABLE" } }, 503) : null) });
+  res = await run({ live: true });
+  const g503 = find(res, "Gemini", "live test");
+  check("Gemini 503 -> warn that quotes Google's own message", g503?.status === "warn" && /HTTP 503: This model is currently experiencing high demand/.test(g503.detail), g503?.detail);
+  globalThis.fetch = makeFetch({ "openrouter.ai/api/v1/chat/completions": () => J({ error: { message: "Provider returned error", code: 429, metadata: { raw: JSON.stringify({ error: { message: "google/gemma-4-31b-it:free is temporarily rate-limited upstream. Please retry shortly." } }), provider_name: "Google AI Studio" } } }, 429) });
+  res = await run({ live: true });
+  const orw = find(res, "OpenRouter", "gemma-4-31b-it:free");
+  check("OpenRouter 'Provider returned error' -> warn that digs out the upstream reason and provider", orw?.status === "warn" && /temporarily rate-limited upstream/.test(orw.detail) && /Google AI Studio/.test(orw.detail), orw?.detail);
+  globalThis.fetch = makeFetch({ "api.mistral.ai/v1/chat/completions": (u, o) => (JSON.parse(o.body).model === maxModel ? new Response(JSON.stringify({ message: "Rate limit exceeded" }), { status: 429, headers: { "retry-after": "37" } }) : null) });
+  res = await run({ live: true });
+  check("429 with a Retry-After header -> says how long to wait", /retry in 37s/.test(find(res, "Mistral", maxModel)?.detail || ""), find(res, "Mistral", maxModel)?.detail);
+
+  // Search: awake-but-useless is not a green tick
+  const sxEnv = { ...process.env, SEARXNG_URL: "https://searx.example.test" };
+  globalThis.fetch = makeFetch({ "searx.example.test": () => J({ results: [], unresponsive_engines: [["google", "CAPTCHA"], ["duckduckgo", "timeout"]] }) });
+  res = await run({ live: true }, {}, sxEnv);
+  const sx0 = find(res, "Search", "SearXNG");
+  check("SearXNG 200 with 0 results -> WARN naming the failing engines", sx0?.status === "warn" && /0 results/.test(sx0.detail) && /google \(CAPTCHA\)/.test(sx0.detail), sx0?.detail);
+  globalThis.fetch = makeFetch({ "searx.example.test": () => J({ results: [{ title: "x" }] }) });
+  res = await run({ live: true }, {}, sxEnv);
+  check("SearXNG with results is still a green tick", find(res, "Search", "SearXNG")?.status === "ok");
+  globalThis.fetch = makeFetch({ "api.tavily.com": () => J({ detail: "weird" }) });
+  res = await run({ live: true }, {}, { ...process.env, TAVILY_API_KEY: "tvly-FAKE_TAVILY_000111" });
+  check("Tavily 200 without a results list -> WARN", find(res, "Search", "Tavily")?.status === "warn");
+}
+
+// ===== 16. image probe: vision models are tested with a real image =====
+{
+  const cfVision = catalog.openAiCompatible.find((r) => r.tier === "vision" && /cloudflare/.test(r.baseUrl)).model;
+  globalThis.fetch = makeFetch();
+  res = await run({ live: true });
+  const imgPosts = calls.filter((x) => x.method === "POST" && /image_url/.test(x.body || ""));
+  const cfImg = imgPosts.find((x) => x.url.includes("api.cloudflare.com"));
+  const sent = cfImg && JSON.parse(cfImg.body);
+  check("live: the Cloudflare vision model is sent a real PNG image (same message shape the bot uses)", !!sent && sent.model === cfVision && sent.messages[0].content.some((c) => c.type === "image_url" && /^data:image\/png;base64,iVBOR/.test(c.image_url.url)));
+  check("live: the test image is bigger than 1x1 (vision encoders reject tiny images)", (() => { const b = Buffer.from(sent.messages[0].content.find((c) => c.type === "image_url").image_url.url.split(",")[1], "base64"); return b.readUInt32BE(16) >= 28 && b.readUInt32BE(20) >= 28; })());
+  check("live: a vision-only model is NOT also sent a text probe (saves requests)", !calls.some((x) => x.method === "POST" && x.url.includes("api.cloudflare.com") && x.body && JSON.parse(x.body).model === cfVision && !/image_url/.test(x.body)));
+  const cfLine = find(res, "Cloudflare Workers AI", cfVision);
+  check("live: the vision line says it read the test image", cfLine?.status === "ok" && /read the test image in/.test(cfLine.detail) && /Red/.test(cfLine.detail), cfLine?.detail);
+  const zline = res.find((r) => r.group === "Z.ai" && r.name === "glm-4.6v-flash");
+  check("live: Z.ai's vision model is image-tested too", zline?.status === "ok" && /read the test image/.test(zline.detail), zline?.detail);
+  const gposts = calls.filter((x) => x.method === "POST" && x.url.includes("generateContent"));
+  check("live: Gemini's vision backup gets an inline image", gposts.length === 1 && /inline_data/.test(gposts[0].body) && /image\/png/.test(gposts[0].body));
+  check("live: Gemini line says it read the test image", /read the test image/.test(find(res, "Gemini", "live test")?.detail || ""), find(res, "Gemini", "live test")?.detail);
+
+  // a model that answers about something else
+  globalThis.fetch = makeFetch({ "api.cloudflare.com": (u, o) => (u.endsWith("/chat/completions") && JSON.parse(o.body).model === cfVision ? J({ choices: [{ message: { content: "I cannot see any image." } }] }) : null) });
+  res = await run({ live: true });
+  const blind = find(res, "Cloudflare Workers AI", cfVision);
+  check("a vision model that can't see the image -> WARN 'not with red'", blind?.status === "warn" && /not with red/.test(blind.detail) && /can't tell what is in a plain test image/.test(blind.detail), blind?.detail);
+  // a model that rejects images
+  globalThis.fetch = makeFetch({ "api.cloudflare.com": (u, o) => (u.endsWith("/chat/completions") && JSON.parse(o.body).model === cfVision ? J({ errors: [{ message: "this model does not support image input" }] }, 400) : null) });
+  res = await run({ live: true });
+  const reject = find(res, "Cloudflare Workers AI", cfVision);
+  check("a vision model that rejects images -> not green, and says it was the image", reject?.status !== "ok" && /while reading the test image/.test(reject.detail), reject?.detail);
+  // Gemini vision returning the wrong thing
+  globalThis.fetch = makeFetch({ "generativelanguage.googleapis.com": (u, o) => (o.method === "POST" ? J({ candidates: [{ content: { parts: [{ text: "OK" }] } }] }) : null) });
+  res = await run({ live: true });
+  check("Gemini answering 'OK' to the image question -> WARN (it ignored the image)", find(res, "Gemini", "live test")?.status === "warn" && /not with red/.test(find(res, "Gemini", "live test")?.detail || ""), find(res, "Gemini", "live test")?.detail);
+  const { judgeProbeReply: j2 } = await import("../lib/health.js");
+  check("judgeProbeReply(…, 'red'): Red / red. / 'The image is red' ok; 'blue' and 'OK' are not", ["Red", "red.", "The image is red"].every((t) => j2(t, "red") === "ok") && j2("blue", "red") === "unexpected" && j2("OK", "red") === "unexpected");
+}
 
 globalThis.fetch = realFetch;
 console.log(`\n${pass} passed, ${fail} failed`);

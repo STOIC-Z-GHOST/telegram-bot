@@ -20,6 +20,9 @@ check("only what follows the LAST 'final' marker is kept (analysis channel dropp
 check("stray tokens mid-text are removed", cleanModelText("A<|return|> B") === "A B");
 check("whitespace trimmed", cleanModelText("  hi \n") === "hi");
 check("non-strings pass through (so '!text' still means no reply)", cleanModelText(null) === null && cleanModelText(undefined) === undefined);
+check("the '!!!!' filler Cloudflare's gpt-oss-120b returned becomes empty (-> next provider answers)", cleanModelText("!!!!!!!!!!!!!!!!!!!!!!!!") === "" && cleanModelText("  ........\n") === "");
+check("short punctuation / emoji replies are real answers and untouched", cleanModelText("?") === "?" && cleanModelText("...") === "..." && cleanModelText("👍") === "👍" && cleanModelText("!!!") === "!!!");
+check("filler inside a real sentence is untouched", cleanModelText("Wow!!!!!!!!!! That works.") === "Wow!!!!!!!!!! That works.");
 check("empty string stays empty", cleanModelText("") === "");
 
 // ---- model choices
