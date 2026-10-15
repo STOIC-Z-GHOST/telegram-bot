@@ -211,7 +211,7 @@ check("live: OpenRouter's image model says it was spared (50/day)", /not live-te
 check("live: OpenRouter spends exactly 1 of its 50/day", posts.filter((p) => p.url.includes("openrouter.ai")).length === 1);
 check("live: Cloudflare text + flash + vision answer", res.filter((r) => r.group === "Cloudflare Workers AI" && /(answered|read the test image) in/.test(r.detail) && r.status === "ok").length === 3);
 check("live: no image is generated (no CF /ai/run call)", !posts.some((p) => /\/ai\/run\//.test(p.url)));
-check("live report says so", /each model was asked/.test(formatReport(res, { live: true })));
+check("live report says so", /Live test: chat models were asked to reply "OK"; image models were shown a small red picture/.test(formatReport(res, { live: true })));
 globalThis.fetch = makeFetch({ "api.groq.com/openai/v1/chat/completions": () => J({ error: { message: "rate limit reached" } }, 429) });
 res = await run({ live: true });
 check("live 429 -> warn", res.some((r) => r.group === "Groq" && r.name.startsWith("openai/gpt-oss") && r.status === "warn" && /rate-limited/.test(r.detail)));
@@ -486,6 +486,15 @@ check("redactor ignores short/non-secret values", makeRedactor({ BOT_NAME: "Assi
   globalThis.fetch = makeFetch({ "generativelanguage.googleapis.com": (u, o) => (o.method === "POST" ? J({ candidates: [{ content: { parts: [{ text: "OK" }] } }] }) : null) });
   res = await run({ live: true });
   check("Gemini answering 'OK' to the image question -> WARN (it ignored the image)", find(res, "Gemini", "live test")?.status === "warn" && /not with red/.test(find(res, "Gemini", "live test")?.detail || ""), find(res, "Gemini", "live test")?.detail);
+  // a rejected KEY while reading the image must not claim the image was the problem
+  globalThis.fetch = makeFetch({ "api.cloudflare.com": (u, o) => (u.endsWith("/chat/completions") && JSON.parse(o.body).model === cfVision ? J({ errors: [{ message: "Authentication failed" }] }, 401) : null) });
+  res = await run({ live: true });
+  const auth401 = find(res, "Cloudflare Workers AI", cfVision);
+  check("a 401 on the image probe is a key problem, with no '(while reading the test image)' note", auth401?.status !== "ok" && !/while reading the test image/.test(auth401.detail), auth401?.detail);
+  globalThis.fetch = makeFetch({ "api.cloudflare.com": (u, o) => (u.endsWith("/chat/completions") && JSON.parse(o.body).model === cfVision ? J({ errors: [{ message: "The service may be temporarily overloaded" }] }, 429) : null) });
+  res = await run({ live: true });
+  const lim429 = find(res, "Cloudflare Workers AI", cfVision);
+  check("a 429 on the image probe is a rate-limit WARN, with no '(while reading the test image)' note", lim429?.status === "warn" && /rate-limited right now/.test(lim429.detail) && !/while reading the test image/.test(lim429.detail), lim429?.detail);
   const { judgeProbeReply: j2 } = await import("../lib/health.js");
   check("judgeProbeReply(…, 'red'): Red / red. / 'The image is red' ok; 'blue' and 'OK' are not", ["Red", "red.", "The image is red"].every((t) => j2(t, "red") === "ok") && j2("blue", "red") === "unexpected" && j2("OK", "red") === "unexpected");
 }
