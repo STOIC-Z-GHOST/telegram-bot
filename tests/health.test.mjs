@@ -203,10 +203,10 @@ check("live: Groq's two chat models answer (merged into their model lines)", res
 check("live: no separate '— live' lines any more", !res.some((r) => r.name.endsWith("— live")));
 check("live: Gemini live test uses ONLY the roomy lite model", posts.filter((p) => p.url.includes("generateContent")).length === 1 && posts.find((p) => p.url.includes("generateContent")).url.includes("gemini-3.5-flash-lite"), posts.filter((p) => p.url.includes("generateContent")).map((p) => p.url.split("/models/")[1]).join());
 check("live: never calls the 20/day primary Gemini model", !posts.some((p) => p.url.includes("gemini-3.6-flash")));
-check("live: Mistral gets exactly 2 requests (its free plan allows ~2/minute), not 4", posts.filter((p) => p.url.includes("api.mistral.ai")).length === 2);
-check("live: those 2 are the Max model and the cheapest", (() => { const m = posts.filter((p) => p.url.includes("api.mistral.ai")).map((p) => JSON.parse(p.body).model).sort(); return m.join() === ["ministral-8b-2512", maxModel].sort().join(); })());
+check("live: Mistral gets exactly one request per model (limits are per model), one after the other", posts.filter((p) => p.url.includes("api.mistral.ai")).length === catalog.openAiCompatible.filter((r) => /mistral/.test(r.baseUrl)).length);
+check("live: the Mistral requests cover the Max model, the cheapest, and the standard-chat models", (() => { const m = posts.filter((p) => p.url.includes("api.mistral.ai")).map((p) => JSON.parse(p.body).model); return [maxModel, "ministral-8b-2512", "ministral-14b-2512", "mistral-small-2603"].every((x) => m.includes(x)) && new Set(m).size === m.length; })());
 check("the default Max model is Medium 3.5", maxModel === "mistral-medium-3-5", maxModel);
-check("live: the other Mistral models say why they weren't asked", find(res, "Mistral", "mistral-small-2603")?.status === "ok" && /not live-tested: Mistral's free plan/.test(find(res, "Mistral", "mistral-small-2603").detail), find(res, "Mistral", "mistral-small-2603")?.detail);
+check("live: every Mistral model is really asked (a listed model can still be blocked on the plan)", find(res, "Mistral", "mistral-small-2603")?.status === "ok" && /answered in/.test(find(res, "Mistral", "mistral-small-2603").detail), find(res, "Mistral", "mistral-small-2603")?.detail);
 check("live: OpenRouter's image model says it was spared (50/day)", /not live-tested: to save/.test(find(res, "OpenRouter", "gemma-4-26b-a4b-it:free")?.detail || ""));
 check("live: OpenRouter spends exactly 1 of its 50/day", posts.filter((p) => p.url.includes("openrouter.ai")).length === 1);
 check("live: Cloudflare text + flash + vision answer", res.filter((r) => r.group === "Cloudflare Workers AI" && /(answered|read the test image) in/.test(r.detail) && r.status === "ok").length === 3);
@@ -430,7 +430,7 @@ check("redactor ignores short/non-secret values", makeRedactor({ BOT_NAME: "Assi
   globalThis.fetch = makeFetch({ "generativelanguage.googleapis.com": (u, o) => (o.method === "POST" ? J({ error: { code: 503, message: "This model is currently experiencing high demand.", status: "UNAVAILABLE" } }, 503) : null) });
   res = await run({ live: true });
   const g503 = find(res, "Gemini", "live test");
-  check("Gemini 503 -> warn that quotes Google's own message", g503?.status === "warn" && /HTTP 503: This model is currently experiencing high demand/.test(g503.detail), g503?.detail);
+  check("Gemini 503 (high demand) -> busy line that quotes Google's own message", g503?.status === "busy" && /HTTP 503: This model is currently experiencing high demand/.test(g503.detail), g503?.detail);
   globalThis.fetch = makeFetch({ "openrouter.ai/api/v1/chat/completions": () => J({ error: { message: "Provider returned error", code: 429, metadata: { raw: JSON.stringify({ error: { message: "google/gemma-4-31b-it:free is temporarily rate-limited upstream. Please retry shortly." } }), provider_name: "Google AI Studio" } } }, 429) });
   res = await run({ live: true });
   const orw = find(res, "OpenRouter", "gemma-4-31b-it:free");
@@ -517,9 +517,16 @@ check("redactor ignores short/non-secret values", makeRedactor({ BOT_NAME: "Assi
   res = await run({ live: true });
   check("Max mode rate limit stays a WARNING (and is under Needs attention)", find(res, "Mistral", maxModel)?.status === "warn" && /Needs attention[\s\S]*Mistral/.test(formatReport(res, { live: true })));
   // 5xx is still a warning (a persistent outage is worth seeing)
-  globalThis.fetch = makeFetch({ "generativelanguage.googleapis.com": (u, o) => (o.method === "POST" ? J({ error: { message: "overloaded" } }, 503) : null) });
+  globalThis.fetch = makeFetch({ "generativelanguage.googleapis.com": (u, o) => (o.method === "POST" ? J({ error: { message: "Internal error encountered." } }, 503) : null) });
   res = await run({ live: true });
-  check("a 503 is still a warning, not busy", find(res, "Gemini", "live test")?.status === "warn");
+  check("a 503 with no 'temporary' message is still a warning, not busy", find(res, "Gemini", "live test")?.status === "warn");
+  globalThis.fetch = makeFetch({ "generativelanguage.googleapis.com": (u, o) => (o.method === "POST" ? J({ error: { code: 503, message: "This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later.", status: "UNAVAILABLE" } }, 503) : null) });
+  res = await run({ live: true });
+  const gBusy = find(res, "Gemini", "live test");
+  check("Google's 'high demand, try again later' 503 -> busy (💤), keeps Google's own message", gBusy?.status === "busy" && /high demand/.test(gBusy.detail) && /not a fault/.test(gBusy.detail), gBusy?.detail);
+  globalThis.fetch = makeFetch({ "api.groq.com": (u, o) => (u.endsWith("/chat/completions") ? J({ error: { message: "Service is over capacity, try again later" } }, 503) : null) });
+  res = await run({ live: true });
+  check("a provider 503 saying 'try again later' on a normal model -> busy", res.some((r) => r.group === "Groq" && r.name.startsWith("openai/gpt-oss") && r.status === "busy"));
 
   // Cloudflare: ids its own notice says stay active are not flagged just because the catalog search omits them
   const cfFastId = "@cf/meta/llama-3.1-8b-instruct-fast";
@@ -532,6 +539,56 @@ check("redactor ignores short/non-secret values", makeRedactor({ BOT_NAME: "Assi
   res = await run({ live: true }, withCfFlash("@cf/meta/llama-3.1-8b-instruct-fp8-fast"));
   const cfOld = res.find((r) => r.group === "Cloudflare Workers AI" && r.name === "@cf/meta/llama-3.1-8b-instruct-fp8-fast");
   check("an id NOT on the stays-active list is still flagged as probably deprecated", cfOld?.status === "warn" && /no longer in Cloudflare's catalog/.test(cfOld.detail), cfOld?.detail);
+}
+
+// ===== 18. SearXNG behind Render's front door =====
+{
+  const sxEnv2 = { ...process.env, SEARXNG_URL: "https://searx.example.test" };
+  const renderEdge = (status, routing) => () => new Response("Too Many Requests", { status, headers: { "x-render-routing": routing } });
+  globalThis.fetch = makeFetch({ "searx.example.test": renderEdge(429, "hibernate-rate-limited") });
+  res = await run({ live: true }, {}, sxEnv2);
+  const sxEdge = find(res, "Search", "SearXNG");
+  check("Render's front door (x-render-routing) answering 429 -> says it is Render, asleep, not a SearXNG setting", sxEdge?.status === "warn" && /Render's front door/.test(sxEdge.detail) && /hibernate-rate-limited/.test(sxEdge.detail) && !/JSON output/.test(sxEdge.detail), sxEdge?.detail);
+  globalThis.fetch = makeFetch({ "searx.example.test": renderEdge(403, "no-server") });
+  res = await run({ live: true }, {}, sxEnv2);
+  check("a 403 from Render's front door is not blamed on SearXNG's JSON setting", !/JSON output/.test(find(res, "Search", "SearXNG")?.detail || ""));
+  globalThis.fetch = makeFetch({ "searx.example.test": () => new Response("Forbidden", { status: 403 }) });
+  res = await run({ live: true }, {}, sxEnv2);
+  const sx403 = find(res, "Search", "SearXNG");
+  check("a plain 403 from SearXNG itself is still 'JSON switched off', and now also mentions the settings file no longer loading", sx403?.status === "warn" && /JSON output is switched off/.test(sx403.detail) && /SEARXNG_SETTINGS_PATH/.test(sx403.detail), sx403?.detail);
+}
+
+// ===== 19. a rate limit of ZERO is a plan restriction, not "busy" (the real Mistral Medium reply) =====
+{
+  const zero = () => new Response(JSON.stringify({ object: "error", message: "Rate limit exceeded", type: "rate_limited", code: "1300", raw_status_code: 429 }), { status: 429, headers: { "content-type": "application/json", "x-ratelimit-limit-req-minute": "0", "x-ratelimit-remaining-req-minute": "0" } });
+  globalThis.fetch = makeFetch({ "api.mistral.ai/v1/chat/completions": (u, o) => (JSON.parse(o.body).model === maxModel ? zero() : null) });
+  res = await run({ live: true });
+  const z = find(res, "Mistral", maxModel);
+  check("Mistral 429 with x-ratelimit-limit-req-minute: 0 -> WARN saying it is 0 requests/minute and waiting won't help", z?.status === "warn" && /0 requests a minute/.test(z.detail) && /never clear/.test(z.detail) && !/right now/.test(z.detail), z?.detail);
+  check("…and it stays under 'Needs attention'", /Needs attention[\s\S]*0 requests a minute/.test(formatReport(res, { live: true })));
+  // the same zero-limit on a NON-Max model must not be hidden as 'busy' either
+  const stdModel = catalog.openAiCompatible.find((r) => r.baseUrl.includes("mistral") && r.model !== maxModel && r.tier === "flash").model;
+  globalThis.fetch = makeFetch({ "api.mistral.ai/v1/chat/completions": (u, o) => (JSON.parse(o.body).model === stdModel ? zero() : null) });
+  res = await run({ live: true });
+  check("a zero allowance on a normal model is a WARN, not 💤", find(res, "Mistral", stdModel)?.status === "warn");
+  // a normal 429 (non-zero limit header) is still just busy for a normal model
+  globalThis.fetch = makeFetch({ "api.mistral.ai/v1/chat/completions": (u, o) => (JSON.parse(o.body).model === stdModel ? new Response(JSON.stringify({ message: "Rate limit exceeded" }), { status: 429, headers: { "x-ratelimit-limit-req-minute": "2" } }) : null) });
+  res = await run({ live: true });
+  check("a 429 with a non-zero limit stays 💤 busy for a normal model", find(res, "Mistral", stdModel)?.status === "busy");
+}
+
+// ===== 20. a LISTED model whose allowance is 0 must not get a green tick (mistral-small-2603 on the owner's key) =====
+{
+  const zero = () => new Response(JSON.stringify({ object: "error", message: "Rate limit exceeded", type: "rate_limited", code: "1300" }), { status: 429, headers: { "x-ratelimit-limit-req-minute": "0" } });
+  globalThis.fetch = makeFetch({ "api.mistral.ai/v1/chat/completions": (u, o) => (JSON.parse(o.body).model === "mistral-small-2603" ? zero() : null) });
+  res = await run({ live: true });
+  const smallZero = find(res, "Mistral", "mistral-small-2603");
+  check("mistral-small-2603 listed but allowed 0 requests/minute -> WARN, no longer a green 'listed'", smallZero?.status === "warn" && /0 requests a minute/.test(smallZero.detail), smallZero?.detail);
+  check("the other Mistral models are unaffected", ["ministral-14b-2512", "ministral-8b-2512"].every((m) => find(res, "Mistral", m)?.status === "ok"));
+  // a 403 'not available in your subscription tier' is also surfaced, not hidden
+  globalThis.fetch = makeFetch({ "api.mistral.ai/v1/chat/completions": (u, o) => (JSON.parse(o.body).model === "mistral-small-2603" ? new Response(JSON.stringify({ message: "Model not available in your subscription tier" }), { status: 403 }) : null) });
+  res = await run({ live: true });
+  check("a 403 'not in your subscription tier' on a listed Mistral model -> not green", find(res, "Mistral", "mistral-small-2603")?.status !== "ok", find(res, "Mistral", "mistral-small-2603")?.detail);
 }
 
 globalThis.fetch = realFetch;
