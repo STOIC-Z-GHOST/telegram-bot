@@ -214,7 +214,7 @@ check("live: no image is generated (no CF /ai/run call)", !posts.some((p) => /\/
 check("live report says so", /Live test: chat models were asked to reply "OK"; image models were shown a small red picture/.test(formatReport(res, { live: true })));
 globalThis.fetch = makeFetch({ "api.groq.com/openai/v1/chat/completions": () => J({ error: { message: "rate limit reached" } }, 429) });
 res = await run({ live: true });
-check("live 429 -> warn", res.some((r) => r.group === "Groq" && r.name.startsWith("openai/gpt-oss") && r.status === "warn" && /rate-limited/.test(r.detail)));
+check("live 429 on a normal model -> busy (not a warning)", res.some((r) => r.group === "Groq" && r.name.startsWith("openai/gpt-oss") && r.status === "busy" && /rate-limited/.test(r.detail)));
 
 // ===== 12. SearXNG / Tavily =====
 const withSearch = { ...process.env, SEARXNG_URL: "https://s.example.org/", TAVILY_API_KEY: "tvly-FAKE_000111222" };
@@ -346,7 +346,7 @@ check("...and the cheap model is still tested and fine", find(res, "Mistral", "m
 globalThis.fetch = makeFetch({ "openrouter.ai/api/v1/chat/completions": () => J({ error: { message: "Provider returned error: google/gemma-4-31b-it:free is temporarily rate-limited upstream" } }, 429) });
 res = await run({ live: true });
 const or429 = find(res, "OpenRouter", "gemma-4-31b-it:free");
-check("429 -> warn that includes the provider's message", or429?.status === "warn" && /temporarily rate-limited upstream/.test(or429.detail) && /key itself works/.test(or429.detail), or429?.detail);
+check("429 -> busy line that includes the provider's message", or429?.status === "busy" && /temporarily rate-limited upstream/.test(or429.detail) && /key itself works/.test(or429.detail), or429?.detail);
 
 // a sleeping SearXNG
 const sx = { ...process.env, SEARXNG_URL: "https://s.example.org" };
@@ -434,7 +434,7 @@ check("redactor ignores short/non-secret values", makeRedactor({ BOT_NAME: "Assi
   globalThis.fetch = makeFetch({ "openrouter.ai/api/v1/chat/completions": () => J({ error: { message: "Provider returned error", code: 429, metadata: { raw: JSON.stringify({ error: { message: "google/gemma-4-31b-it:free is temporarily rate-limited upstream. Please retry shortly." } }), provider_name: "Google AI Studio" } } }, 429) });
   res = await run({ live: true });
   const orw = find(res, "OpenRouter", "gemma-4-31b-it:free");
-  check("OpenRouter 'Provider returned error' -> warn that digs out the upstream reason and provider", orw?.status === "warn" && /temporarily rate-limited upstream/.test(orw.detail) && /Google AI Studio/.test(orw.detail), orw?.detail);
+  check("OpenRouter 'Provider returned error' -> busy line that digs out the upstream reason and provider", orw?.status === "busy" && /temporarily rate-limited upstream/.test(orw.detail) && /Google AI Studio/.test(orw.detail), orw?.detail);
   globalThis.fetch = makeFetch({ "api.mistral.ai/v1/chat/completions": (u, o) => (JSON.parse(o.body).model === maxModel ? new Response(JSON.stringify({ message: "Rate limit exceeded" }), { status: 429, headers: { "retry-after": "37" } }) : null) });
   res = await run({ live: true });
   check("429 with a Retry-After header -> says how long to wait", /retry in 37s/.test(find(res, "Mistral", maxModel)?.detail || ""), find(res, "Mistral", maxModel)?.detail);
@@ -494,9 +494,44 @@ check("redactor ignores short/non-secret values", makeRedactor({ BOT_NAME: "Assi
   globalThis.fetch = makeFetch({ "api.cloudflare.com": (u, o) => (u.endsWith("/chat/completions") && JSON.parse(o.body).model === cfVision ? J({ errors: [{ message: "The service may be temporarily overloaded" }] }, 429) : null) });
   res = await run({ live: true });
   const lim429 = find(res, "Cloudflare Workers AI", cfVision);
-  check("a 429 on the image probe is a rate-limit WARN, with no '(while reading the test image)' note", lim429?.status === "warn" && /rate-limited right now/.test(lim429.detail) && !/while reading the test image/.test(lim429.detail), lim429?.detail);
+  check("a 429 on the image probe is a busy line (not a warning), with no '(while reading the test image)' note", lim429?.status === "busy" && /rate-limited right now/.test(lim429.detail) && !/while reading the test image/.test(lim429.detail), lim429?.detail);
   const { judgeProbeReply: j2 } = await import("../lib/health.js");
   check("judgeProbeReply(…, 'red'): Red / red. / 'The image is red' ok; 'blue' and 'OK' are not", ["Red", "red.", "The image is red"].every((t) => j2(t, "red") === "ok") && j2("blue", "red") === "unexpected" && j2("OK", "red") === "unexpected");
+}
+
+// ===== 17. quieter report: busy != warning; Cloudflare's "stays active" ids =====
+{
+  const { summarize } = await import("../lib/health.js");
+  globalThis.fetch = makeFetch({ "openrouter.ai/api/v1/chat/completions": () => J({ error: { message: "Provider returned error", code: 429 } }, 429) });
+  res = await run({ live: true });
+  const rep429 = formatReport(res, { live: true });
+  const orBusy = res.filter((r) => r.group === "OpenRouter" && r.status === "busy");
+  check("a rate-limited free model is listed as busy, with the 💤 icon", orBusy.length >= 1 && /💤 .*not a fault/.test(rep429));
+  check("busy lines do NOT appear under 'Needs attention'", !/Needs attention[\s\S]*💤/.test(rep429));
+  check("busy lines don't raise the warning count or change the headline", summarize(res).warn === 0 && /Everything checked is connected/.test(rep429) && /· [1-9]\d* busy \(provider limits, not faults\)/.test(rep429), rep429.split("\n").slice(-4).join(" | "));
+  globalThis.fetch = makeFetch();
+  res = await run({ live: true });
+  check("with nothing busy the summary has no 'busy' part", !/busy/.test(formatReport(res, { live: true })));
+  // Max mode keeps its warning: a Max user would silently get a Standard answer
+  globalThis.fetch = makeFetch({ "api.mistral.ai/v1/chat/completions": (u, o) => (JSON.parse(o.body).model === maxModel ? J({ message: "Rate limit exceeded" }, 429) : null) });
+  res = await run({ live: true });
+  check("Max mode rate limit stays a WARNING (and is under Needs attention)", find(res, "Mistral", maxModel)?.status === "warn" && /Needs attention[\s\S]*Mistral/.test(formatReport(res, { live: true })));
+  // 5xx is still a warning (a persistent outage is worth seeing)
+  globalThis.fetch = makeFetch({ "generativelanguage.googleapis.com": (u, o) => (o.method === "POST" ? J({ error: { message: "overloaded" } }, 503) : null) });
+  res = await run({ live: true });
+  check("a 503 is still a warning, not busy", find(res, "Gemini", "live test")?.status === "warn");
+
+  // Cloudflare: ids its own notice says stay active are not flagged just because the catalog search omits them
+  const cfFastId = "@cf/meta/llama-3.1-8b-instruct-fast";
+  const cfCatalogOmits = (u) => (u.includes("/ai/models/search") ? J({ result: [] }) : null);
+  globalThis.fetch = makeFetch({ "api.cloudflare.com": cfCatalogOmits });
+  const withCfFlash = (id) => ({ catalog: { ...catalog, openAiCompatible: catalog.openAiCompatible.map((r) => (r.tier === "flash" && /cloudflare/.test(r.baseUrl) ? { ...r, model: id } : r)) } });
+  res = await run({ live: true }, withCfFlash(cfFastId));
+  const cfFast = res.find((r) => r.group === "Cloudflare Workers AI" && r.name === cfFastId);
+  check("Cloudflare '-fast' id that stays active, missing from the catalog search but answering -> green", cfFast?.status === "ok", cfFast?.detail);
+  res = await run({ live: true }, withCfFlash("@cf/meta/llama-3.1-8b-instruct-fp8-fast"));
+  const cfOld = res.find((r) => r.group === "Cloudflare Workers AI" && r.name === "@cf/meta/llama-3.1-8b-instruct-fp8-fast");
+  check("an id NOT on the stays-active list is still flagged as probably deprecated", cfOld?.status === "warn" && /no longer in Cloudflare's catalog/.test(cfOld.detail), cfOld?.detail);
 }
 
 globalThis.fetch = realFetch;
