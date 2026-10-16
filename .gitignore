@@ -26,4 +26,4 @@ migrate_channel_bonus_v11.sql
 migrate_search_cache_v12.sql
 migrate_chat_pinning_v13.sql
 migrate_voice_seconds_v14.sql
-migrate_plan_trials_v15.sql
+migrate_plan_trials_v15.sql 
