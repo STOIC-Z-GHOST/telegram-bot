@@ -610,6 +610,15 @@ check("redactor ignores short/non-secret values", makeRedactor({ BOT_NAME: "Assi
   check("…and no allowance text when the provider sends no header", !/allowed \d+ requests/.test(find(res, "Groq", "gpt-oss-120b")?.detail || ""));
 }
 
+// ===== 22. "Needs attention" lines are long enough to say what is wrong =====
+{
+  const zero = () => new Response(JSON.stringify({ message: "Rate limit exceeded" }), { status: 429, headers: { "x-ratelimit-limit-req-minute": "0" } });
+  globalThis.fetch = makeFetch({ "api.mistral.ai/v1/chat/completions": (u, o) => (JSON.parse(o.body).model === maxModel ? zero() : null) });
+  res = await run({ live: true });
+  const att = formatReport(res, { live: true }).split("Needs attention\n")[1] || "";
+  check("the Needs-attention line for a zero allowance still contains 'waiting will never clear it' (was cut mid-header at 100 chars)", /waiting will never clear it/.test(att), att.split("\n")[0]);
+}
+
 globalThis.fetch = realFetch;
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
