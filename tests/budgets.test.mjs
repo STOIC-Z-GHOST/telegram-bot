@@ -17,10 +17,11 @@ const probeFile = path.join(here, "_probe_budgets.mjs");
 fs.writeFileSync(probeFile, `
 process.env.DATABASE_URL ||= "postgres://u:p@localhost.invalid/db";
 const { BUDGETS, budgetsOf } = await import("../lib/providerBudget.js");
-const { TIER_LIMITS } = await import("../lib/limits.js");
+const { TIER_LIMITS, MAX_SITE_DAILY_CAP } = await import("../lib/limits.js");
 const { providerCatalog } = await import("../lib/ai.js");
 const rows = providerCatalog().openAiCompatible;
 console.log(JSON.stringify({
+  siteCap: MAX_SITE_DAILY_CAP,
   mistralCap: BUDGETS.mistral.cap, maxCap: BUDGETS.mistral_max.cap, maxKind: BUDGETS.mistral_max.kind, maxKindOverall: BUDGETS.mistral.kind,
   free: TIER_LIMITS.free.maxPerDay, pro: TIER_LIMITS.pro.maxPerDay, premium: TIER_LIMITS.premium.maxPerDay,
   maxBudgets: rows.filter((r) => r.tier === "max").map(budgetsOf),
@@ -29,7 +30,7 @@ console.log(JSON.stringify({
   noBudget: budgetsOf({}), nothing: budgetsOf(undefined),
 }));
 `);
-const run = (env = {}) => JSON.parse(execFileSync(process.execPath, ["--no-deprecation", probeFile], { env: { PATH: process.env.PATH, ...env }, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim().split("\n").pop());
+const run = (env = {}) => JSON.parse(execFileSync(process.execPath, ["--no-deprecation", probeFile], { env: { PATH: process.env.PATH, MISTRAL_MAX_ENABLED: "1", ...env }, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim().split("\n").pop());
 
 try {
   // ---------- defaults
@@ -37,12 +38,31 @@ try {
   check("Max gets its own slice: $5 of the $8.50 Mistral credit", d.maxCap === 5_000_000 && d.mistralCap === 8_500_000, `${d.maxCap} / ${d.mistralCap}`);
   check("the slice is tracked separately from the pot (different usage_events kinds)", d.maxKind === "mistral_max_microusd" && d.maxKindOverall === "mistral_microusd" && d.maxKind !== d.maxKindOverall);
   check("at least $3 of the credit is always left for the cheap Mistral models", d.mistralCap - d.maxCap >= 3_000_000, `${(d.mistralCap - d.maxCap) / 1e6}`);
-  check("Max draws on BOTH the pot and its slice", d.maxBudgets.length === 1 && d.maxBudgets[0].join() === "mistral,mistral_max", JSON.stringify(d.maxBudgets));
+  check("Mistral Max draws on BOTH the pot and its slice (the free OpenRouter Max row behind it draws on neither)", d.maxBudgets.length === 2 && d.maxBudgets[0].join() === "mistral,mistral_max" && d.maxBudgets[1].length === 0, JSON.stringify(d.maxBudgets));
   check("cheap Mistral models draw only on the pot (so they keep working when Max's slice is spent)", d.otherMistral.length >= 3 && d.otherMistral.every((b) => b.join() === "mistral"), JSON.stringify(d.otherMistral));
   check("Cloudflare is unaffected", d.cloudflare.length >= 1 && d.cloudflare.every((b) => b.join() === "cloudflare"));
   check("a provider with no budget -> none", d.noBudget.length === 0 && d.nothing.length === 0);
   check("Free still has no Max; Pro 5/day and Premium 10/day by default (was: unlimited)", d.free === 0 && d.pro === 5 && d.premium === 10, `${d.free}/${d.pro}/${d.premium}`);
   check("Premium's cap is above Pro's, and both above the trials' (2 and 5)", d.premium > d.pro && d.pro > 2);
+
+  // ---------- by default Max is OpenRouter's free model: no dollars to guard
+  const df = JSON.parse(execFileSync(process.execPath, ["--no-deprecation", probeFile], { env: { PATH: process.env.PATH }, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim().split("\n").pop());
+  check("default Max (OpenRouter's free model) draws on no dollar budget; Mistral Max is only present when MISTRAL_MAX_ENABLED=1", df.maxBudgets.length === 1 && df.maxBudgets[0].length === 0, JSON.stringify(df.maxBudgets));
+
+  // ---------- the site-wide Max cap (OpenRouter's free pool is ~50 requests a day for EVERYONE)
+  check("the site-wide Max cap defaults to 40, under OpenRouter's ~50/day shared pool", df.siteCap === 40, String(df.siteCap));
+  check("MAX_SITE_DAILY_CAP overrides it; 'unlimited' removes it; garbage / 0 / negative -> the safe default", run({ MAX_SITE_DAILY_CAP: "25" }).siteCap === 25 && run({ MAX_SITE_DAILY_CAP: "UNLIMITED" }).siteCap === null && run({ MAX_SITE_DAILY_CAP: "abc" }).siteCap === 40 && run({ MAX_SITE_DAILY_CAP: "0" }).siteCap === 40 && run({ MAX_SITE_DAILY_CAP: "-3" }).siteCap === 40);
+  const { maxLimitVerdict } = await import("../lib/limits.js");
+  const mv = (mine, everyone, perDay = 5, siteCap = 40) => maxLimitVerdict({ mine, everyone, perDay, siteCap });
+  check("under both limits -> allowed", mv(2, 10).allowed === true);
+  check("at the per-user cap -> not allowed, says Standard was used", mv(5, 10).allowed === false && /5 Max replies/.test(mv(5, 10).reason) && /Standard/.test(mv(5, 10).reason));
+  check("at the site cap -> not allowed, 'Max is very busy', Standard used", mv(0, 40).allowed === false && /very busy/.test(mv(0, 40).reason) && /Standard/.test(mv(0, 40).reason));
+  check("39 site replies -> still allowed; 40 -> blocked (cap is inclusive, like Extra's)", mv(0, 39).allowed === true && mv(0, 40).allowed === false);
+  check("the per-user reason wins when both are hit (it is the more specific one)", /Max replies you get per day/.test(mv(5, 99).reason));
+  check("a plan with no per-user cap (unlimited) is still stopped by the site cap", mv(99, 40, null, 40).allowed === false && mv(99, 10, null, 40).allowed === true);
+  check("no site cap (unlimited) -> only the per-user cap applies", mv(0, 9999, 5, null).allowed === true && mv(5, 0, 5, null).allowed === false);
+  const msg = fs.readFileSync(path.join(root, "api/miniapp/messages.js"), "utf8");
+  check("messages.js counts a Max reply by the SET of Max models (OpenRouter's or Mistral's), not one id", /MAX_MODEL_IDS\.has\(result\.servedBy\)/.test(msg) && !/MAX_MODEL_ID\b/.test(msg));
 
   // ---------- env overrides
   const o = run({ MISTRAL_MAX_BUDGET_USD: "3", MAX_PER_DAY_PRO: "3", MAX_PER_DAY_PREMIUM: "20" });

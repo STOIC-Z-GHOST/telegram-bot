@@ -22,6 +22,11 @@ const KEYS = {
   VERCEL_ENV: "production",
 };
 Object.assign(process.env, KEYS);
+// These tests exercise /health against EVERY provider row, so pin the optional ones on: Mistral Medium in Max's chain, OpenRouter in
+// Standard, and the old Cloudflare fast id (the "missing from the catalog" scenario). The defaults are tested in models.test.mjs.
+process.env.MISTRAL_MAX_ENABLED = "1";
+process.env.OPENROUTER_IN_STANDARD = "1";
+process.env.CF_FLASH_MODEL = "@cf/meta/llama-3.1-8b-instruct-fp8-fast";
 
 const { runHealthCheck, formatReport, splitReport, summarize, makeRedactor } = await import("../lib/health.js");
 const { providerCatalog } = await import("../lib/ai.js");
@@ -208,7 +213,7 @@ check("live: the Mistral requests cover the Max model, the cheapest, and the sta
 check("the default Max model is Medium 3.5", maxModel === "mistral-medium-3-5", maxModel);
 check("live: every Mistral model is really asked (a listed model can still be blocked on the plan)", find(res, "Mistral", "mistral-small-2603")?.status === "ok" && /answered in/.test(find(res, "Mistral", "mistral-small-2603").detail), find(res, "Mistral", "mistral-small-2603")?.detail);
 check("live: OpenRouter's image model says it was spared (50/day)", /not live-tested: to save/.test(find(res, "OpenRouter", "gemma-4-26b-a4b-it:free")?.detail || ""));
-check("live: OpenRouter spends exactly 1 of its 50/day", posts.filter((p) => p.url.includes("openrouter.ai")).length === 1);
+check("live: OpenRouter is only asked about its Standard/Max rows (never the vision one), one request each", (() => { const orPosts = posts.filter((p) => p.url.includes("openrouter.ai")); const rows = catalog.openAiCompatible.filter((r) => /openrouter/.test(r.baseUrl) && r.tier !== "vision").length; return orPosts.length === rows && !orPosts.some((p) => /gemma-4-26b/.test(p.body)); })());
 check("live: Cloudflare text + flash + vision answer", res.filter((r) => r.group === "Cloudflare Workers AI" && /(answered|read the test image) in/.test(r.detail) && r.status === "ok").length === 3);
 check("live: no image is generated (no CF /ai/run call)", !posts.some((p) => /\/ai\/run\//.test(p.url)));
 check("live report says so", /Live test: chat models were asked to reply "OK"; image models were shown a small red picture/.test(formatReport(res, { live: true })));
@@ -617,6 +622,19 @@ check("redactor ignores short/non-secret values", makeRedactor({ BOT_NAME: "Assi
   res = await run({ live: true });
   const att = formatReport(res, { live: true }).split("Needs attention\n")[1] || "";
   check("the Needs-attention line for a zero allowance still contains 'waiting will never clear it' (was cut mid-header at 100 chars)", /waiting will never clear it/.test(att), att.split("\n")[0]);
+}
+
+// ===== 23. Max on OpenRouter's free model =====
+{
+  const orMax = catalog.openAiCompatible.find((r) => r.name === "OpenRouter Max");
+  check("the catalog has an OpenRouter Max row (a :free id)", !!orMax && orMax.model.endsWith(":free") && orMax.tier === "max");
+  globalThis.fetch = makeFetch({ "openrouter.ai/api/v1/chat/completions": (u, o) => (JSON.parse(o.body).model === orMax.model ? J({ error: { message: "Provider returned error", code: 429, metadata: { raw: "temporarily rate-limited upstream" } } }, 429) : null) });
+  res = await run({ live: true });
+  const l = find(res, "OpenRouter", orMax.model);
+  check("a rate-limited FREE Max model is a quiet 💤 line (shared pool), not a warning", l?.status === "busy", l?.detail);
+  globalThis.fetch = makeFetch({ "api.mistral.ai/v1/chat/completions": (u, o) => (JSON.parse(o.body).model === maxModel ? new Response(JSON.stringify({ message: "Rate limit exceeded" }), { status: 429, headers: { "x-ratelimit-limit-req-minute": "2" } }) : null) });
+  res = await run({ live: true });
+  check("…while a rate-limited PAID Max model (Mistral Medium, non-zero limit) stays a warning", find(res, "Mistral", maxModel)?.status === "warn");
 }
 
 globalThis.fetch = realFetch;

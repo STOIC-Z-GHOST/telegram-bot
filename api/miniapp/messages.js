@@ -52,7 +52,7 @@ import { put } from "@vercel/blob";
 import { db } from "../../db/client.js";
 import { chats, messages } from "../../db/schema.js";
 import { requireTelegramUser } from "../../lib/telegramAuth.js";
-import { getConversationReply, MODEL_TIER_MIN_PLAN, MAX_MODEL_ID } from "../../lib/ai.js";
+import { getConversationReply, MODEL_TIER_MIN_PLAN, MAX_MODEL_IDS } from "../../lib/ai.js";
 import { searchWeb, condenseSearchOutcomeForCache, SEARCH_CACHE_FRESHNESS_MS } from "../../lib/search.js";
 import { analyzeAttachments } from "../../lib/attachments.js";
 import { generateImage, extractImageGenMarker, plausiblyImageRequest, friendlyImageError } from "../../lib/imagegen.js";
@@ -567,7 +567,7 @@ export default async function handler(req, res) {
       extraUsedGemini = modelTier === "extra" && typeof result.servedBy === "string" && result.servedBy.startsWith("gemini");
       // Extra can also land on the Max model once its Gemini models are spent, so
       // count by what actually answered, not by the tier that was requested.
-      maxUsedLarge = result.servedBy === MAX_MODEL_ID;
+      maxUsedLarge = MAX_MODEL_IDS.has(result.servedBy);
 
       // Only overwrites the cache on an actual successful search — a
       // failed/empty one (condenseSearchOutcomeForCache returns null) or a
