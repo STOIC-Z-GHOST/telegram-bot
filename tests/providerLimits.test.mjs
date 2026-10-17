@@ -17,6 +17,7 @@ const catalog = {
     { tier: "standard", name: "OpenRouter Gemma", baseUrl: "https://openrouter.ai/api/v1", apiKey: KEYS.or, model: "google/gemma-4-31b-it:free" },
     { tier: "standard", name: "Cloudflare gpt-oss", baseUrl: "https://api.cloudflare.com/client/v4/accounts/ACC/ai/v1", apiKey: KEYS.cf, model: "@cf/openai/gpt-oss-120b" },
     { tier: "flash", name: "Cloudflare llama", baseUrl: "https://api.cloudflare.com/client/v4/accounts/ACC/ai/v1", apiKey: KEYS.cf, model: "@cf/meta/llama-3.1-8b-instruct-fast" },
+    { tier: "flash", name: "Cloudflare old llama", baseUrl: "https://api.cloudflare.com/client/v4/accounts/ACC/ai/v1", apiKey: KEYS.cf, model: "@cf/meta/llama-3.1-8b-instruct-fp8-fast" },
     { tier: "vision", name: "Z.ai vision", baseUrl: "https://api.z.ai/api/paas/v4", apiKey: KEYS.zai, model: "glm-4.6v-flash" },
     { tier: "standard", name: "Unconfigured", baseUrl: "", apiKey: "", model: "x" },
   ],
@@ -49,11 +50,11 @@ function makeFetch(over = {}) {
     ] });
     if (url.includes("api.mistral.ai") && url.endsWith("/chat/completions")) {
       const m = JSON.parse(o.body).model;
-      if (m === "ministral-14b-2512") return J({ choices: [] }, 200, { "x-ratelimit-limit-req-minute": "30" });
+      if (m === "ministral-14b-2512") return J({ choices: [] }, 200, { "x-ratelimit-limit-req-minute": "30", "x-ratelimit-limit-tokens-minute": "937500", "x-ratelimit-remaining-tokens-minute": "937482", "x-ratelimit-tokens-query-cost": "9" });
       if (m === "labs-leanstral-1-5-1") return J({ message: "not in tier" }, 403);
       return J({ object: "error", message: "Rate limit exceeded" }, 429, { "x-ratelimit-limit-req-minute": "0" });
     }
-    if (url.includes("openrouter.ai/api/v1/key")) return J({ data: { label: "my-key", usage: 0.12, limit: null, is_free_tier: true } });
+    if (url.includes("openrouter.ai/api/v1/key")) return J({ data: { label: "sk-or-v1-7a8...320", usage: 0.12, limit: 50, is_free_tier: true, rate_limit: { requests: -1, interval: "10s", note: "This field is deprecated and safe to ignore." } } });
     if (url.includes("openrouter.ai/api/v1/models")) return J({ data: [{ id: "google/gemma-4-31b-it:free", context_length: 131072 }, { id: "meta/llama:free", context_length: 8000 }, { id: "paid/model", context_length: 1000 }] });
     if (url.includes("/ai/models/search")) return J({ result: [{ name: "@cf/openai/gpt-oss-120b", task: { name: "Text Generation" } }, { name: "@cf/black-forest-labs/flux-1-schnell", task: { name: "Text-to-Image" } }] });
     if (url.includes("generativelanguage.googleapis.com") && url.includes("/models?")) return J({ models: [
@@ -63,8 +64,8 @@ function makeFetch(over = {}) {
       { name: "models/embedding-001", supportedGenerationMethods: ["embedContent"] },
     ] });
     if (url.includes("generateContent")) return J({ candidates: [{ content: { parts: [{ text: "Hi" }] } }] });
-    if (url.includes("api.tavily.com/usage")) return J({ key: { usage: 150, limit: 1000 }, account: { current_plan: "Researcher", plan_usage: 150, plan_limit: 1000 } });
-    if (url.includes("api.z.ai") && url.endsWith("/chat/completions")) return J({ choices: [] }, 200);
+    if (url.includes("api.tavily.com/usage")) return J({ key: { usage: 150, limit: null }, account: { current_plan: "Researcher", plan_usage: 150, plan_limit: 1000 } });
+    if (url.includes("api.z.ai") && url.endsWith("/chat/completions")) return J({ error: { message: "The service may be temporarily overloaded, please try again later" } }, 429);
     return J({ error: "unexpected " + url }, 404);
   };
   f.calls = calls;
@@ -103,7 +104,9 @@ check("OpenRouter: is never probed (keeps the 50 free requests a day)", !r.calls
 
 // Cloudflare
 let c = sec(r, "Cloudflare");
-check("Cloudflare: the bot's models in the catalog are 'in the catalog', missing ones are flagged", c.models.find((x) => x.id === "@cf/openai/gpt-oss-120b")?.state === "info" && c.models.find((x) => x.id === "@cf/meta/llama-3.1-8b-instruct-fast")?.state === "gone");
+check("Cloudflare: the bot's models in the catalog are 'in the catalog'", c.models.find((x) => x.id === "@cf/openai/gpt-oss-120b")?.state === "info");
+check("Cloudflare: a '-fast' id Cloudflare says stays active is NOT flagged just because the search omits it", c.models.find((x) => x.id === "@cf/meta/llama-3.1-8b-instruct-fast")?.state === "info" && /stays active/.test(c.models.find((x) => x.id === "@cf/meta/llama-3.1-8b-instruct-fast").text));
+check("Cloudflare: an id that is missing and NOT on the stays-active list is still flagged", c.models.find((x) => x.id === "@cf/meta/llama-3.1-8b-instruct-fp8-fast")?.state === "gone");
 check("Cloudflare: says it sends no limit headers and gives the neuron note", c.notes.some((n) => /no limit headers/.test(n)) && c.notes.some((n) => /neurons/.test(n)));
 
 // Gemini
@@ -119,8 +122,8 @@ check("Gemini --probe-gemini: exactly one request, to the lite model", rg.calls.
 
 // Tavily / Z.ai
 let t = sec(r, "Tavily");
-check("Tavily: shows credits used of the limit and the plan", /150 of 1000 credits/.test(t.notes[0]) && /Researcher/.test(t.notes[1]));
-check("Z.ai: is asked once and the output says it documents no limit headers", sec(r, "Z.ai").models[0].state === "ok" && sec(r, "Z.ai").notes.some((n) => /no limit headers/.test(n)));
+check("Tavily: says credits used, that the key has no cap, and how many are left on the plan", /150 credits used/.test(t.notes[0]) && /no cap set on the key/.test(t.notes[0]) && /Researcher/.test(t.notes[1]) && /850 left/.test(t.notes[1]), t.notes.join(" | "));
+check("Z.ai: asked once; a 429 shows as busy WITH the provider's own message; notes say no limit headers", sec(r, "Z.ai").models[0].state === "busy" && /temporarily overloaded/.test(sec(r, "Z.ai").models[0].text) && sec(r, "Z.ai").notes.some((n) => /no limit headers/.test(n)));
 
 // failure isolation
 let rf = await run({ "api.groq.com": () => J({ error: { message: "Invalid API Key" } }, 401) });
@@ -160,6 +163,20 @@ check("the printed report has the legend and uses stars", /★ = a model the bot
   check("the /limits handler sends the formatted report (no env dump)", /formatProviderLimits\(sections\)/.test(block) && !/JSON\.stringify\(process\.env|console\.log\(process\.env/.test(block));
   check("the /limits handler passes process.env only into the module that never prints it", /runProviderLimits\(\{ env: process\.env/.test(block));
   check("/limits is documented in the command list", /\/limits \[all\|gemini\]/.test(src));
+}
+
+// ===== fixes from the first real /limits output =====
+{
+  const orText = formatProviderLimits([o]);
+  check("the OpenRouter key label (a masked piece of the key) and its deprecated rate_limit are not printed", !/sk-or-v1|7a8\.\.\.320/.test(r.text) && !/deprecated|rate limit:/.test(orText) && /spend limit: \$50/.test(o.notes[0]), o.notes[0]);
+  check("no URL in the report (Telegram would turn it into a link-preview card)", !/https?:\/\/|console\.groq\.com/.test(r.text));
+  check("Mistral: token limits are labelled, and the cost of the test itself is hidden", /tokens\/min: 937500/.test(r.text) && /tokens\/min left: 937482/.test(r.text) && !/query-cost|tokens-query/.test(r.text));
+  check("Groq: the voice model is starred even though it is not a chat model", sec(r, "Groq").models.find((x) => x.id === "whisper-large-v3-turbo")?.bot === true);
+  const ra2 = await run({ "/ai/models/search": () => J({ result: [{ name: "@cf/openai/gpt-oss-120b", task: { name: "Text Generation" } }, { name: "@cf/meta/llama-3.2-3b-instruct", task: { name: "Text Generation" } }, { name: "@cf/black-forest-labs/flux-1-schnell", task: { name: "Text-to-Image" } }] }) }, { all: true });
+  const cfNote = sec(ra2, "Cloudflare").notes.find((n) => /Text Generation models/.test(n)) || "";
+  check("/limits all lists Cloudflare's Text Generation models (and only those)", /gpt-oss-120b/.test(cfNote) && /llama-3\.2-3b-instruct/.test(cfNote) && !/flux/.test(cfNote), cfNote);
+  check("without all, it only offers to list them", sec(r, "Cloudflare").notes.some((n) => /Add `all`/.test(n)) && !sec(r, "Cloudflare").notes.some((n) => /Text Generation models you could use/.test(n)));
+  check("/limits all lists every other Gemini model by name", /gemini-3.7-flash/.test(sec(ra2, "Gemini").notes[0]) && !/add `all`/.test(sec(ra2, "Gemini").notes[0]));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
