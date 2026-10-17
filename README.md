@@ -437,7 +437,7 @@ Two ways to run the same check (`lib/health.js`):
 | | Quick (default) | Live |
 |---|---|---|
 | What it does | Asks each provider free questions: "is this key valid?" and "does this exact model id exist?" | Also sends ONE tiny "reply with OK" to each model |
-| Cost | No generation quota, no money | A handful of requests: 1 of OpenRouter's 50/day; 1 Gemini call on the roomy 3.5 Flash-Lite model (never the 20/day one); a few Cloudflare neurons; 2 Mistral requests, one at a time (its free plan allows only ~2 a minute); a few Groq and Tavily calls. No image is generated. |
+| Cost | No generation quota, no money | A handful of requests: 1 of OpenRouter's 50/day; 1 Gemini call on the roomy 3.5 Flash-Lite model (never the 20/day one); a few Cloudflare neurons; one request per Mistral model, one at a time (limits are per model: on the owner's key they run from 30 to 750 a minute); a few Groq and Tavily calls. No image is generated. |
 
 It checks: every required setting; the Neon database **and that every table exists** (a missing one names the
 migration file to run); the Telegram bot token, that a webhook is set and what Telegram's last delivery error was;
@@ -446,6 +446,27 @@ ModelScope, Z.ai, SearXNG, Tavily) with the exact model ids `lib/ai.js` calls �
 so a retired or mistyped model shows up here instead of as a silent fallback. ✅ ok, ⚠️ works but look
 (rate-limited right now, provider hiccup), ❌ fix this, ⏭️ not configured (optional). No key is ever printed:
 provider messages are scrubbed first. Tests: `node --no-deprecation tests/health.test.mjs` (54 checks, fake network).
+
+## How much can each key actually use? (`/limits` in Telegram, or `npm run limits`)
+
+`/health` answers "is it working?". `npm run limits` answers "what is each key allowed to use?" — it asks every provider
+for the models your key can see and for whatever limits that provider reports (`lib/providerLimits.js`, tests:
+`node --no-deprecation tests/providerLimits.test.mjs`). Models the bot uses are marked ★. Keys are never printed.
+
+- **`/limits`** (owner only, in Telegram) runs inside the deployed bot, so it works even when your variables are marked
+  **Sensitive** in Vercel — Vercel never lets you read those back, and `vercel env pull` writes them out blank. `/limits all`
+  also asks every Groq chat model; `/limits gemini` sends one tiny Gemini request.
+- **`npm run limits`** does the same from your computer, but needs real keys in `.env.local` (it can't pull Sensitive ones).
+
+| Provider | What you get |
+|---|---|
+| Groq | every model with context size, plus requests/day and tokens/min (from the response headers; `--all` asks every chat model) |
+| Mistral | every chat model, one tiny request each: allowed requests/min, and 🚫 for models your plan blocks (0 allowed, or 403) |
+| OpenRouter | key info (free tier, spend) and the free models; never asked, to keep the 50 free requests a day |
+| Tavily | credits used of your limit, and your plan |
+| Cloudflare | which of the bot's models are in the catalog; Cloudflare reports no limits (free allowance is in neurons/day) |
+| Gemini | which of the bot's models your key can use, with token limits; Google reports no limits (read them on the AI Studio rate-limit page). `--probe-gemini` sends one tiny request and, on a 429, prints which quota was hit |
+| Z.ai | one tiny request and any limit headers it sends |
 
 ## Editing files people upload (Phases 2 and 3)
 

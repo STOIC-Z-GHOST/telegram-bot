@@ -18,6 +18,7 @@
   },
   "scripts": {
     "check": "node --env-file=.env.local scripts/check-env.mjs",
-    "check:live": "node --env-file=.env.local scripts/check-env.mjs --live"
+    "check:live": "node --env-file=.env.local scripts/check-env.mjs --live",
+    "limits": "node --env-file=.env.local scripts/limits.mjs"
   }
 }

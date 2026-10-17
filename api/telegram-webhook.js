@@ -35,6 +35,8 @@
 //   /image <prompt>  generates an image via Pollinations.ai (also /img)
 //   /users           (owner only) lists approved users with a Remove button
 //   /health [live]   (owner only) checks every key + model id; "live" makes each model answer once
+//   /limits [all|gemini]  (owner only) asks each provider what your keys can use: models + limits ("all" asks every Groq
+//                     chat model; "gemini" sends one tiny Gemini request). Works with Sensitive env vars, unlike a local script.
 //   /upgrade         shows current plan + Pro/Premium options (Telegram Stars,
 //                     billed monthly, auto-renewing)
 //   /invite          shows your referral link/code, credited invites, and
@@ -78,6 +80,7 @@ import { createFile, FileGenError, asciiSlug } from "../lib/fileGen/index.js";
 import { detectEditRequest } from "../lib/fileGen/editDetect.js";
 import { editFile } from "../lib/fileGen/edit/index.js";
 import { runHealthCheck, formatReport, splitReport } from "../lib/health.js";
+import { runProviderLimits, formatProviderLimits } from "../lib/providerLimits.js";
 import { classifyFile, ALL_FILES_SUMMARY } from "../lib/fileTypes.js";
 import { extractDocumentText, buildDocumentPrompt } from "../lib/attachments.js";
 import { transcribeAudio } from "../lib/transcribe.js";
@@ -960,6 +963,25 @@ export default async function handler(req, res) {
     } catch (err) {
       console.error("/health failed:", err);
       await sendTelegramMessage(chatId, "⚠️ The health check itself crashed — see the Vercel logs.");
+    }
+    res.status(200).send("OK");
+    return;
+  }
+
+  // Owner-only: "/limits" asks every provider which models your keys can use and what limits they report
+  // (lib/providerLimits.js). It runs HERE, inside the deployed bot, because Vercel never lets you read back a variable
+  // marked Sensitive — so a local script can't get the keys. Nothing it sends contains a key.
+  const limitsMatch = isOwner(chatId) && text?.match(/^\/limits(?:@\w+)?(?:\s+(all|gemini))?\s*$/i);
+  if (limitsMatch) {
+    const mode = (limitsMatch[1] || "").toLowerCase();
+    await sendTelegramMessage(chatId, "🔎 Asking every provider what your keys allow — about 15 seconds…");
+    try {
+      const { providerCatalog } = await import("../lib/ai.js");
+      const sections = await runProviderLimits({ env: process.env, catalog: providerCatalog(), all: mode === "all", probeGemini: mode === "gemini" });
+      for (const part of splitReport(formatProviderLimits(sections))) await sendTelegramMessage(chatId, part);
+    } catch (err) {
+      console.error("/limits failed:", err);
+      await sendTelegramMessage(chatId, "⚠️ The limits check itself crashed — see the Vercel logs.");
     }
     res.status(200).send("OK");
     return;

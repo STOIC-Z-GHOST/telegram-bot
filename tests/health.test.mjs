@@ -313,7 +313,7 @@ globalThis.fetch = makeFetch();
 
 
 // ===== 13c. regressions from the SECOND real /health live run =====
-// Mistral probed strictly one at a time (it allows ~2 requests a minute)
+// Mistral probed strictly one at a time
 {
   let inFlight = 0, maxInFlight = 0;
   globalThis.fetch = makeFetch({
@@ -589,6 +589,25 @@ check("redactor ignores short/non-secret values", makeRedactor({ BOT_NAME: "Assi
   globalThis.fetch = makeFetch({ "api.mistral.ai/v1/chat/completions": (u, o) => (JSON.parse(o.body).model === "mistral-small-2603" ? new Response(JSON.stringify({ message: "Model not available in your subscription tier" }), { status: 403 }) : null) });
   res = await run({ live: true });
   check("a 403 'not in your subscription tier' on a listed Mistral model -> not green", find(res, "Mistral", "mistral-small-2603")?.status !== "ok", find(res, "Mistral", "mistral-small-2603")?.detail);
+}
+
+// ===== 21. image probe is multiple choice; allowances are shown =====
+{
+  globalThis.fetch = makeFetch();
+  res = await run({ live: true });
+  const imgBody = calls.filter((x) => x.method === "POST" && /image_url/.test(x.body || "")).map((x) => JSON.parse(x.body));
+  check("the image question offers red / green / blue (colour naming alone is fuzzy)", imgBody.length >= 1 && imgBody.every((b) => /red, green or blue/.test(JSON.stringify(b))));
+  // a model that picks 'red' from the choices is fine; one that says 'orange' for pure red is not penalised by naming alone
+  check("answering 'Red' is still the expected answer", find(res, "Cloudflare Workers AI", "gemma-4-26b")?.status === "ok");
+  globalThis.fetch = makeFetch({ "api.cloudflare.com": (u, o) => (u.endsWith("/chat/completions") && /image_url/.test(o.body || "") ? J({ choices: [{ message: { content: "orange" } }] }) : null) });
+  res = await run({ live: true });
+  check("a model that still doesn't pick red/green/blue -> warn", find(res, "Cloudflare Workers AI", "gemma-4-26b")?.status === "warn");
+  // allowance shown when the provider reports one
+  globalThis.fetch = makeFetch({ "api.mistral.ai/v1/chat/completions": (u, o) => (JSON.parse(o.body).model === "ministral-14b-2512" ? new Response(JSON.stringify({ choices: [{ message: { content: "OK" } }] }), { status: 200, headers: { "x-ratelimit-limit-req-minute": "30" } }) : null) });
+  res = await run({ live: true });
+  const l14 = find(res, "Mistral", "ministral-14b-2512");
+  check("a working model shows the provider's per-minute allowance", l14?.status === "ok" && /allowed 30 requests a minute/.test(l14.detail), l14?.detail);
+  check("…and no allowance text when the provider sends no header", !/allowed \d+ requests/.test(find(res, "Groq", "gpt-oss-120b")?.detail || ""));
 }
 
 globalThis.fetch = realFetch;
