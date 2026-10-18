@@ -12,6 +12,10 @@ let pass = 0, fail = 0;
 const check = (label, cond, extra = "") => { (cond ? pass++ : fail++); console.log(cond ? "ok  " : "FAIL", label, extra); };
 
 // ---- cleanModelText: what a person must never be shown
+check("hidden reasoning between <think> tags is removed, the answer kept", cleanModelText("<think>The user wants a greeting. Be brief.</think>Hello there!") === "Hello there!");
+check("multi-line / multiple <think> blocks are removed", cleanModelText("<think>a\nb</think>One <think>c</think>Two") === "One Two");
+check("thinking that was cut off before the answer counts as NO text (the next provider answers)", cleanModelText("<think>The user asks about") === "");
+check("an ordinary mention of the word think is untouched", cleanModelText("I think so, and <thinking> is not a tag here") === "I think so, and <thinking> is not a tag here");
 check("plain text is untouched", cleanModelText("Hello, world.") === "Hello, world.");
 check("markdown/code with angle brackets is untouched", cleanModelText("Use `<div>` and a < b | c > d") === "Use `<div>` and a < b | c > d");
 check("the literal reply seen from Cloudflare's gpt-oss-120b becomes empty (-> next provider answers)", cleanModelText("<|start|>assistant") === "");
@@ -28,14 +32,15 @@ check("empty string stays empty", cleanModelText("") === "");
 // ---- model choices
 const cat = providerCatalog();
 const ids = cat.openAiCompatible.map((r) => r.model);
-check("by default Max runs on OpenRouter's free Nemotron 3 Ultra (the Mistral key can't call Medium), and Mistral Max is NOT in the chain", cat.openAiCompatible.filter((r) => r.tier === "max").length === 1 && cat.openAiCompatible.some((r) => r.tier === "max" && r.name === "OpenRouter Max" && r.model === "nvidia/nemotron-3-ultra-550b-a55b:free") && !cat.openAiCompatible.some((r) => r.name === "Mistral Max"));
+check("by default Max runs on Groq's Qwen 3.8 27B (its own quota); Mistral Max (blocked on this key) and OpenRouter Max (logs prompts for NVIDIA) are NOT in the chain", cat.openAiCompatible.filter((r) => r.tier === "max").length === 1 && cat.openAiCompatible.some((r) => r.tier === "max" && r.name === "Groq Max" && r.model === "qwen/qwen3.8-27b") && !cat.openAiCompatible.some((r) => r.name === "Mistral Max" || r.name === "OpenRouter Max"));
+check("no free NVIDIA route is used anywhere by default", !cat.openAiCompatible.some((r) => /nvidia/i.test(r.model)));
 check("the Max model has no dollar budget (it is free); the daily Max caps are its guard", cat.openAiCompatible.find((r) => r.tier === "max").budget === null);
 check("no retired model ids remain", !ids.includes("llama-3.1-8b-instant") && !ids.includes("openai/gpt-oss-120b:free") && !ids.includes("qwen/qwen2.5-vl-32b-instruct:free"), ids.join(" | "));
 const flash = cat.openAiCompatible.find((r) => r.tier === "flash" && /groq/.test(r.baseUrl));
 check("fast mode's Groq model is gpt-oss-20b (Groq's own replacement)", flash.model === "openai/gpt-oss-20b");
 const orRows = cat.openAiCompatible.filter((r) => /openrouter/.test(r.baseUrl));
-check("every OpenRouter model is a :free id", orRows.length === 2 && orRows.every((r) => r.model.endsWith(":free")), orRows.map((r) => r.model).join());
-check("OpenRouter is NOT in the Standard chain by default (its shared free pool is reserved for Max); it is used for Max + vision", !orRows.some((r) => r.tier === "standard") && orRows.some((r) => r.tier === "max") && orRows.some((r) => r.tier === "vision" && r.model === "google/gemma-4-26b-a4b-it:free"));
+check("every OpenRouter model is a :free id", orRows.length === 1 && orRows.every((r) => r.model.endsWith(":free")), orRows.map((r) => r.model).join());
+check("by default OpenRouter is used only as a vision fallback (not in Standard, not in Max)", orRows.length === 1 && orRows[0].tier === "vision" && orRows[0].model === "google/gemma-4-26b-a4b-it:free");
 check("Standard goes Groq -> Cloudflare -> Ministral 14B -> the small Mistral slot, and Ministral 14B comes before any OpenRouter use", (() => { const st = cat.openAiCompatible.filter((r) => r.tier === "standard").map((r) => r.name); return st.indexOf("Ministral 14B") > st.indexOf("Cloudflare") && !st.includes("OpenRouter"); })(), cat.openAiCompatible.filter((r) => r.tier === "standard").map((r) => r.name).join(" > "));
 check("the Cloudflare fast default is the '-fast' id Cloudflare says stays active", cat.openAiCompatible.find((r) => r.tier === "flash" && /cloudflare/.test(r.baseUrl))?.model === "@cf/meta/llama-3.1-8b-instruct-fast" || !cat.openAiCompatible.some((r) => r.tier === "flash" && /cloudflare/.test(r.baseUrl)));
 
@@ -51,6 +56,7 @@ console.log(JSON.stringify({
   orText: c.find((r) => r.tier === "standard" && /openrouter/.test(r.baseUrl))?.model ?? null,
   orMax: c.find((r) => r.tier === "max" && /openrouter/.test(r.baseUrl))?.model ?? null,
   maxFirst: c.filter((r) => r.tier === "max").map((r) => r.name).join(">"),
+  maxModels: c.filter((r) => r.tier === "max").map((r) => r.model).join(">"),
   stdOrder: c.filter((r) => r.tier === "standard").map((r) => r.name).join(">"),
   orVision: c.find((r) => r.tier === "vision" && /openrouter/.test(r.baseUrl)).model,
 }));
@@ -64,16 +70,21 @@ try {
   check("GROQ_FLASH_MODEL env var overrides the fast-mode model", a.groqFlash === "qwen/qwen3.6-27b");
   check("OPENROUTER_MODEL / OPENROUTER_VISION_MODEL accept :free ids", a.orText === "nvidia/nemotron-3-super-120b-a12b:free" && a.orVision === "google/gemma-4-31b-it:free");
   const b = runWith({ OPENROUTER_IN_STANDARD: "1", OPENROUTER_MODEL: "openai/gpt-oss-120b", OPENROUTER_VISION_MODEL: "anthropic/claude-sonnet-4.5", OPENROUTER_MAX_MODEL: "anthropic/claude-opus-4" });
-  check("a NON-free OpenRouter id is refused (it would bill you) -> default kept, for text, vision AND Max", b.orText === "google/gemma-4-31b-it:free" && b.orVision === "google/gemma-4-26b-a4b-it:free" && b.orMax === "nvidia/nemotron-3-ultra-550b-a55b:free", JSON.stringify(b));
+  check("a NON-free OpenRouter id is refused (it would bill you) -> default kept for text and vision; a non-free Max id leaves OpenRouter Max OFF", b.orText === "google/gemma-4-31b-it:free" && b.orVision === "google/gemma-4-26b-a4b-it:free" && b.orMax === null, JSON.stringify(b));
   const c2 = runWith({});
-  check("nothing set -> the built-in defaults (no OpenRouter in Standard; Max = OpenRouter free)", c2.groqFlash === "openai/gpt-oss-20b" && c2.orText === null && c2.orMax === "nvidia/nemotron-3-ultra-550b-a55b:free");
-  const m1 = runWith({ OPENROUTER_MAX_MODEL: "nvidia/nemotron-3-super-120b-a12b:free" });
-  check("OPENROUTER_MAX_MODEL accepts another :free id", m1.orMax === "nvidia/nemotron-3-super-120b-a12b:free");
+  check("nothing set -> the built-in defaults (no OpenRouter in Standard; Max = Groq Max only)", c2.groqFlash === "openai/gpt-oss-20b" && c2.orText === null && c2.orMax === null && c2.maxFirst === "Groq Max");
+  const g1 = runWith({ GROQ_MAX_MODEL: "openai/gpt-oss-safeguard-20b" });
+  check("GROQ_MAX_MODEL changes the Max model", g1.maxModels === "openai/gpt-oss-safeguard-20b", g1.maxModels);
+  const g2 = runWith({ GROQ_MAX_MODEL: "   " });
+  check("a blank GROQ_MAX_MODEL falls back to the default", g2.maxModels === "qwen/qwen3.8-27b", g2.maxModels);
+  const m1 = runWith({ OPENROUTER_MAX_MODEL: "meta/llama:free" });
+  check("OPENROUTER_MAX_MODEL is OPT-IN: setting a :free id adds OpenRouter Max behind Groq Max", m1.orMax === "meta/llama:free" && m1.maxFirst === "Groq Max>OpenRouter Max", m1.maxFirst);
   const m2 = runWith({ MISTRAL_MAX_ENABLED: "1" });
-  check("MISTRAL_MAX_ENABLED=1 puts Mistral Max FIRST in Max's chain, with OpenRouter's free model behind it", m2.maxFirst === "Mistral Max>OpenRouter Max", m2.maxFirst);
+  check("MISTRAL_MAX_ENABLED=1 puts Mistral Max FIRST in Max's chain, with the free Groq model behind it", m2.maxFirst === "Mistral Max>Groq Max", m2.maxFirst);
   const m3 = runWith({ MISTRAL_MAX_ENABLED: "true" });
   const m4 = runWith({ MISTRAL_MAX_ENABLED: "0" });
-  check("'true' also turns it on; '0' leaves it off", m3.maxFirst === "Mistral Max>OpenRouter Max" && m4.maxFirst === "OpenRouter Max");
+  check("'true' also turns it on; '0' leaves it off", m3.maxFirst === "Mistral Max>Groq Max" && m4.maxFirst === "Groq Max");
+  check("all three together keep that order", runWith({ MISTRAL_MAX_ENABLED: "1", OPENROUTER_MAX_MODEL: "meta/llama:free" }).maxFirst === "Mistral Max>Groq Max>OpenRouter Max");
   const m5 = runWith({ OPENROUTER_IN_STANDARD: "1" });
   check("OPENROUTER_IN_STANDARD=1 brings OpenRouter back into Standard, after Cloudflare and before Ministral 14B", /Cloudflare>OpenRouter>Ministral 14B/.test(m5.stdOrder), m5.stdOrder);
 } finally {
@@ -105,6 +116,44 @@ console.log(JSON.stringify({ model: m.model, cost: m.cost.usdPerM }));
   } finally {
     fs.rmSync(probe2, { force: true });
   }
+}
+
+// ---- Max end to end: an upstream failure returned as HTTP 200 is named in the log, and the user still gets an answer
+{
+  const fs2 = await import("fs");
+  const probe3 = path.join(path.dirname(fileURLToPath(import.meta.url)), "_probe_max_flow.mjs");
+  fs2.writeFileSync(probe3, `
+    const warns = [];
+    console.warn = (...a) => warns.push(a.join(" "));
+    console.log = () => {};
+    const scenario = process.env.SCENARIO;
+    const reply = (content) => new Response(JSON.stringify({ choices: [{ message: { content } }], usage: { total_tokens: 12 } }), { status: 200 });
+    globalThis.fetch = async (url, o) => {
+      const model = JSON.parse(o.body).model;
+      if (model === "qwen/qwen3.8-27b") {
+        if (scenario === "error200") return new Response(JSON.stringify({ error: { code: 502, message: "Upstream error from Nvidia: Service temporarily overloaded" } }), { status: 200 });
+        if (scenario === "think") return reply("<think>planning the answer</think>Max answer.");
+        if (scenario === "cutoff") return reply("<think>still thinking about");
+        return reply("Max answer.");
+      }
+      return reply("Standard answer.");
+    };
+    const { getConversationReply } = await import("../lib/ai.js");
+    const r = await getConversationReply([{ role: "user", content: "hi" }], {}, { tier: "max" });
+    process.stdout.write("\\n" + JSON.stringify({ text: r.text, servedBy: r.servedBy, warns }));
+  `);
+  try {
+    const flow = (scenario) => JSON.parse(execFileSync(process.execPath, ["--no-deprecation", probe3], { env: { PATH: process.env.PATH, SCENARIO: scenario, DATABASE_URL: "postgres://u:p@localhost.invalid/db", GROQ_API_KEY: "g", MISTRAL_API_KEY: "m", OPENROUTER_API_KEY: "o", GEMINI_API_KEY: "x" }, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim().split("\n").pop());
+    const ok = flow("ok");
+    check("Max answered by Groq's Qwen counts as a Max reply (servedBy is the Max model)", ok.text === "Max answer." && ok.servedBy === "qwen/qwen3.8-27b", JSON.stringify(ok));
+    const e = flow("error200");
+    check("an HTTP-200 upstream error: the log names the real reason (not just 'returned no text')", e.warns.some((w) => /Groq Max/.test(w) && /Upstream error from Nvidia: Service temporarily overloaded/.test(w) && !/returned no text/.test(w)), JSON.stringify(e.warns));
+    check("…and the user still gets a Standard answer (servedBy is NOT a Max model, so it is not counted as a Max reply)", e.text === "Standard answer." && e.servedBy === "openai/gpt-oss-120b", JSON.stringify(e));
+    const t = flow("think");
+    check("a Max reply with hidden <think> reasoning is delivered without it", t.text === "Max answer." && t.servedBy === "qwen/qwen3.8-27b", JSON.stringify(t));
+    const c = flow("cutoff");
+    check("a Max reply that is only cut-off thinking falls back to Standard", c.text === "Standard answer." && c.servedBy === "openai/gpt-oss-120b", JSON.stringify(c));
+  } finally { fs2.rmSync(probe3, { force: true }); }
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

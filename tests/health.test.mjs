@@ -26,6 +26,7 @@ Object.assign(process.env, KEYS);
 // Standard, and the old Cloudflare fast id (the "missing from the catalog" scenario). The defaults are tested in models.test.mjs.
 process.env.MISTRAL_MAX_ENABLED = "1";
 process.env.OPENROUTER_IN_STANDARD = "1";
+process.env.OPENROUTER_MAX_MODEL = "nvidia/nemotron-3-ultra-550b-a55b:free"; // opt-in row, so the free-Max health logic is covered
 process.env.CF_FLASH_MODEL = "@cf/meta/llama-3.1-8b-instruct-fp8-fast";
 
 const { runHealthCheck, formatReport, splitReport, summarize, makeRedactor } = await import("../lib/health.js");
@@ -635,6 +636,29 @@ check("redactor ignores short/non-secret values", makeRedactor({ BOT_NAME: "Assi
   globalThis.fetch = makeFetch({ "api.mistral.ai/v1/chat/completions": (u, o) => (JSON.parse(o.body).model === maxModel ? new Response(JSON.stringify({ message: "Rate limit exceeded" }), { status: 429, headers: { "x-ratelimit-limit-req-minute": "2" } }) : null) });
   res = await run({ live: true });
   check("…while a rate-limited PAID Max model (Mistral Medium, non-zero limit) stays a warning", find(res, "Mistral", maxModel)?.status === "warn");
+}
+
+// ===== 24. OpenRouter reports an upstream failure as HTTP 200 + an error body (the real 'problem' in the 18 Oct report) =====
+{
+  const orMax2 = catalog.openAiCompatible.find((r) => r.name === "OpenRouter Max");
+  const err200 = (code, message) => () => new Response(JSON.stringify({ error: { code, message } }), { status: 200 });
+  globalThis.fetch = makeFetch({ "openrouter.ai/api/v1/chat/completions": (u, o) => (JSON.parse(o.body).model === orMax2.model ? err200(502, "Upstream error from Nvidia: Service temporarily overloaded")() : null) });
+  res = await run({ live: true });
+  const l200 = find(res, "OpenRouter", orMax2.model);
+  check("HTTP 200 + {error: 502 'temporarily overloaded'} on a free model -> quiet 💤, NOT a ❌ problem", l200?.status === "busy" && /temporarily overloaded/.test(l200.detail), l200?.detail);
+  check("…and the report has zero problems because of it", summarize(res).fail === 0);
+  globalThis.fetch = makeFetch({ "openrouter.ai/api/v1/chat/completions": (u, o) => (JSON.parse(o.body).model === orMax2.model ? err200(429, "rate limited")() : null) });
+  res = await run({ live: true });
+  check("HTTP 200 + {error: 429} -> 💤 rate-limited", find(res, "OpenRouter", orMax2.model)?.status === "busy");
+  globalThis.fetch = makeFetch({ "openrouter.ai/api/v1/chat/completions": (u, o) => (JSON.parse(o.body).model === orMax2.model ? err200(401, "No auth credentials found")() : null) });
+  res = await run({ live: true });
+  check("HTTP 200 + {error: 401} is still a real problem (a bad key is not 'busy')", find(res, "OpenRouter", orMax2.model)?.status === "fail", find(res, "OpenRouter", orMax2.model)?.detail);
+  globalThis.fetch = makeFetch({ "openrouter.ai/api/v1/chat/completions": (u, o) => (JSON.parse(o.body).model === orMax2.model ? new Response(JSON.stringify({ error: { message: "weird" } }), { status: 200 }) : null) });
+  res = await run({ live: true });
+  check("HTTP 200 + an error with no code is treated as a 502 (not 'answered')", find(res, "OpenRouter", orMax2.model)?.status !== "ok");
+  globalThis.fetch = makeFetch({ "api.mistral.ai/v1/chat/completions": (u, o) => (JSON.parse(o.body).model === maxModel ? err200(502, "Upstream overloaded, try again later")() : null) });
+  res = await run({ live: true });
+  check("the same 200+502 on the PAID Max model (Mistral) stays a warning", find(res, "Mistral", maxModel)?.status === "warn", find(res, "Mistral", maxModel)?.detail);
 }
 
 globalThis.fetch = realFetch;
