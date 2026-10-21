@@ -26,7 +26,8 @@ console.log(JSON.stringify({
   free: TIER_LIMITS.free.maxPerDay, pro: TIER_LIMITS.pro.maxPerDay, premium: TIER_LIMITS.premium.maxPerDay,
   maxBudgets: rows.filter((r) => r.tier === "max").map(budgetsOf),
   otherMistral: rows.filter((r) => /mistral/.test(r.baseUrl) && r.tier !== "max").map(budgetsOf),
-  cloudflare: rows.filter((r) => /^Cloudflare/.test(r.name)).map(budgetsOf), // by name: with no CLOUDFLARE_* keys these have no base URL
+  cloudflare: rows.filter((r) => /^Cloudflare/.test(r.name)).map((r) => ({ name: r.name, budgets: budgetsOf(r), model: r.model, cost: r.cost })), // by name: with no CLOUDFLARE_* keys these have no base URL
+  cfCaps: { pot: BUDGETS.cloudflare.cap, max: BUDGETS.cloudflare_max.cap, std: BUDGETS.cloudflare_standard.cap, kinds: [BUDGETS.cloudflare.kind, BUDGETS.cloudflare_max.kind, BUDGETS.cloudflare_standard.kind] },
   noBudget: budgetsOf({}), nothing: budgetsOf(undefined),
 }));
 `);
@@ -38,20 +39,35 @@ try {
   check("Max gets its own slice: $5 of the $8.50 Mistral credit", d.maxCap === 5_000_000 && d.mistralCap === 8_500_000, `${d.maxCap} / ${d.mistralCap}`);
   check("the slice is tracked separately from the pot (different usage_events kinds)", d.maxKind === "mistral_max_microusd" && d.maxKindOverall === "mistral_microusd" && d.maxKind !== d.maxKindOverall);
   check("at least $3 of the credit is always left for the cheap Mistral models", d.mistralCap - d.maxCap >= 3_000_000, `${(d.mistralCap - d.maxCap) / 1e6}`);
-  check("Mistral Max draws on BOTH the pot and its slice (the free OpenRouter Max row behind it draws on neither)", d.maxBudgets.length === 2 && d.maxBudgets[0].join() === "mistral,mistral_max" && d.maxBudgets[1].length === 0, JSON.stringify(d.maxBudgets));
+  check("Mistral Max draws on BOTH the pot and its slice; Cloudflare Max on the neuron pot and its slice; Groq Max (behind them) on neither", d.maxBudgets.length === 3 && d.maxBudgets[0].join() === "mistral,mistral_max" && d.maxBudgets[1].join() === "cloudflare,cloudflare_max" && d.maxBudgets[2].length === 0, JSON.stringify(d.maxBudgets));
   check("cheap Mistral models draw only on the pot (so they keep working when Max's slice is spent)", d.otherMistral.length >= 3 && d.otherMistral.every((b) => b.join() === "mistral"), JSON.stringify(d.otherMistral));
-  check("Cloudflare is unaffected", d.cloudflare.length >= 1 && d.cloudflare.every((b) => b.join() === "cloudflare"));
+  check("Standard's Cloudflare fallback draws on the pot AND its own smaller slice; Flash draws on the pot only", (() => { const std = d.cloudflare.find((c) => c.name === "Cloudflare"); const fl = d.cloudflare.find((c) => c.name === "Cloudflare Flash"); return std?.budgets.join() === "cloudflare,cloudflare_standard" && fl?.budgets.join() === "cloudflare"; })(), JSON.stringify(d.cloudflare));
+  check("Cloudflare slices: 9,000 pot, Max 4,000, Standard 3,000 -> at least 2,000 always left for images and vision", d.cfCaps.pot === 9000 && d.cfCaps.max === 4000 && d.cfCaps.std === 3000 && d.cfCaps.pot - d.cfCaps.max - d.cfCaps.std >= 2000, JSON.stringify(d.cfCaps));
+  check("each Cloudflare budget is tracked as its own usage_events kind", new Set(d.cfCaps.kinds).size === 3 && d.cfCaps.kinds.join() === "cf_neurons,cf_max_neurons,cf_std_neurons");
+  const cm = d.cloudflare.find((c) => c.name === "Cloudflare Max");
+  check("Cloudflare Max defaults to DeepSeek V4 Pro 0813 at Cloudflare's price (120 in / 360 out neurons per 1K tokens)", cm?.model === "@cf/deepseek-ai/deepseek-v4-pro-0813" && cm.cost?.neuronsPer1K?.in === 120 && cm.cost.neuronsPer1K.out === 360, JSON.stringify(cm));
   check("a provider with no budget -> none", d.noBudget.length === 0 && d.nothing.length === 0);
   check("Free still has no Max; Pro 5/day and Premium 10/day by default (was: unlimited)", d.free === 0 && d.pro === 5 && d.premium === 10, `${d.free}/${d.pro}/${d.premium}`);
   check("Premium's cap is above Pro's, and both above the trials' (2 and 5)", d.premium > d.pro && d.pro > 2);
 
   // ---------- by default Max is OpenRouter's free model: no dollars to guard
   const df = JSON.parse(execFileSync(process.execPath, ["--no-deprecation", probeFile], { env: { PATH: process.env.PATH }, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim().split("\n").pop());
-  check("default Max (OpenRouter's free model) draws on no dollar budget; Mistral Max is only present when MISTRAL_MAX_ENABLED=1", df.maxBudgets.length === 1 && df.maxBudgets[0].length === 0, JSON.stringify(df.maxBudgets));
+  check("by default Max = Cloudflare Max (neuron pot + slice) then Groq Max (no budget); NO dollar budget, because Mistral Max is only present when MISTRAL_MAX_ENABLED=1", df.maxBudgets.length === 2 && df.maxBudgets[0].join() === "cloudflare,cloudflare_max" && df.maxBudgets[1].length === 0, JSON.stringify(df.maxBudgets));
+  // ---------- Cloudflare slices are tunable, and a model's neuron rate follows the model
+  const t1 = run({ CF_MAX_NEURON_DAILY_CAP: "2500", CF_STANDARD_NEURON_DAILY_CAP: "1000" });
+  check("CF_MAX_NEURON_DAILY_CAP and CF_STANDARD_NEURON_DAILY_CAP override the slices", t1.cfCaps.max === 2500 && t1.cfCaps.std === 1000);
+  const t2 = run({ CF_MAX_NEURON_DAILY_CAP: "abc", CF_STANDARD_NEURON_DAILY_CAP: "-5" });
+  check("garbage / negative slice values fall back to the defaults", t2.cfCaps.max === 4000 && t2.cfCaps.std === 3000);
+  const k = run({ CF_MAX_MODEL: "@cf/moonshotai/kimi-k2.7-code" }).cloudflare.find((c) => c.name === "Cloudflare Max");
+  check("CF_MAX_MODEL swaps the model and its neuron rate follows (Kimi K2.7 Code: 86.4 / 363.7)", k?.model === "@cf/moonshotai/kimi-k2.7-code" && k.cost.neuronsPer1K.in === 86.4 && k.cost.neuronsPer1K.out === 363.7, JSON.stringify(k));
+  const unk = run({ CF_MAX_MODEL: "@cf/some/brand-new-model" }).cloudflare.find((c) => c.name === "Cloudflare Max");
+  check("a Cloudflare model that is not in the price table is charged at the DEAREST known rate (the guard errs towards stopping early)", unk?.cost.neuronsPer1K.in === 130 && unk.cost.neuronsPer1K.out === 400, JSON.stringify(unk));
+  check("CF_MAX_MODEL=off (or none/false/0) leaves Cloudflare out of Max", ["off", "NONE", "false", "0"].every((v) => !run({ CF_MAX_MODEL: v }).cloudflare.some((c) => c.name === "Cloudflare Max")));
 
   // ---------- the site-wide Max cap (OpenRouter's free pool is ~50 requests a day for EVERYONE)
-  check("the site-wide Max cap defaults to 40, under OpenRouter's ~50/day shared pool", df.siteCap === 40, String(df.siteCap));
-  check("MAX_SITE_DAILY_CAP overrides it; 'unlimited' removes it; garbage / 0 / negative -> the safe default", run({ MAX_SITE_DAILY_CAP: "25" }).siteCap === 25 && run({ MAX_SITE_DAILY_CAP: "UNLIMITED" }).siteCap === null && run({ MAX_SITE_DAILY_CAP: "abc" }).siteCap === 40 && run({ MAX_SITE_DAILY_CAP: "0" }).siteCap === 40 && run({ MAX_SITE_DAILY_CAP: "-3" }).siteCap === 40);
+  check("the site-wide Max cap defaults to 200 (Groq's Qwen has its own 1,000 requests a day)", df.siteCap === 200, String(df.siteCap));
+  check("…but to 40 when the opt-in OpenRouter Max model is on (all :free models share ~50 requests a day)", run({ OPENROUTER_MAX_MODEL: "meta/llama:free" }).siteCap === 40);
+  check("MAX_SITE_DAILY_CAP overrides it; 'unlimited' removes it; garbage / 0 / negative -> the default", run({ MAX_SITE_DAILY_CAP: "25" }).siteCap === 25 && run({ MAX_SITE_DAILY_CAP: "UNLIMITED" }).siteCap === null && run({ MAX_SITE_DAILY_CAP: "abc" }).siteCap === 200 && run({ MAX_SITE_DAILY_CAP: "0" }).siteCap === 200 && run({ MAX_SITE_DAILY_CAP: "-3" }).siteCap === 200 && run({ MAX_SITE_DAILY_CAP: "abc", OPENROUTER_MAX_MODEL: "meta/llama:free" }).siteCap === 40);
   const { maxLimitVerdict } = await import("../lib/limits.js");
   const mv = (mine, everyone, perDay = 5, siteCap = 40) => maxLimitVerdict({ mine, everyone, perDay, siteCap });
   check("under both limits -> allowed", mv(2, 10).allowed === true);

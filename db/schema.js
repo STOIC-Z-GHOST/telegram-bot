@@ -40,6 +40,12 @@ export const chats = pgTable(
 export const userSettings = pgTable("user_settings", {
   telegramUserId: bigint("telegram_user_id", { mode: "number" }).primaryKey(),
   memoryEnabled: boolean("memory_enabled").notNull().default(false),
+  // "Extended models": may this person's chats go to AI providers that can keep / use / let staff read them? NULL = never
+  // asked (treated as no). dataSharingVersion is the wording version they answered (lib/dataUse.js); dataSharingAt is when —
+  // kept so there is a record of what each person agreed to and when.
+  dataSharing: boolean("data_sharing"),
+  dataSharingVersion: integer("data_sharing_version"),
+  dataSharingAt: timestamp("data_sharing_at"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });

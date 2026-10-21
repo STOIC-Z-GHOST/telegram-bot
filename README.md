@@ -300,7 +300,7 @@ The pill under the message box picks the model for the next replies:
 |---|---|---|
 | ⚡ Flash | gpt-oss-20B on Groq (low reasoning) — fastest | Everyone |
 | Standard | `gpt-oss-120b` on Groq, then the fallback chain | Everyone |
-| Max | Groq Qwen 3.8 27B (Mistral Medium 3.5 once `MISTRAL_MAX_ENABLED=1`) | Pro and Premium |
+| Max | Cloudflare DeepSeek V4 Pro (daily neuron slice), then Groq Qwen 3.8 27B (Mistral Medium 3.5 first once `MISTRAL_MAX_ENABLED=1`) | Pro and Premium |
 | 💎 Extra | Gemini 3.8 → 3.7 → 3.5 → 3 Flash, then Max's model | Premium |
 
 Every tier falls back to the Standard chain on failure, so the worst case is
@@ -356,6 +356,66 @@ Extra card and in the plan table — deliberately vague so it builds anticipatio
 without promising specific features. Remove that wording from
 `public/miniapp/index.html` (search for "New features") if you decide not to
 build any of them. Don't sell Premium on features that aren't live yet.
+
+## Extended models (the privacy setting)
+
+Every person chooses whether their chats may go to AI services that can keep them, use them to improve their own AI, or let
+their staff read them. Nobody is pre-answered: the mini app shows a first-run sheet (two equal buttons: **Turn on Extended
+models** / **Keep my chats private**), the DM bot asks once after `/start` (same two buttons), and until someone answers they
+are treated as **no**. In the mini app it is a Settings row: the name with a "More models" chip, the toggle next to it, and a
+**Details** button underneath that expands the full explanation. In the DM bot, `/privacy` shows the state and the buttons.
+
+| | Extended models OFF (or never answered) | Extended models ON |
+|---|---|---|
+| Text chat | private models only (Groq, Cloudflare, Mistral) | the same, plus the shared ones as extra backups |
+| Extra tier | falls back to Max, with a note | Gemini Flash models first |
+| Photos and PDFs | Cloudflare's vision model; a PDF goes through Mistral OCR to the private text models | Gemini first, then the private/shared vision chain |
+| Voice notes | Groq Whisper only | Groq Whisper, Gemini as the backup |
+| Web search | search words only go to SearXNG/Tavily; Gemini grounding is skipped | Gemini grounding is the last resort |
+| Image prompts | the private image service only (needs the lib/imagegen.js patch, see PATCH-imagegen.md) | Pollinations as the fallback |
+| File creation and editing | private models only (as before) | private models only (not changed) |
+
+**Which providers are "shared"?** `lib/dataUse.js`. Default `SHARED_DATA_PROVIDERS=gemini,openrouter,zai`. Anything the file
+does not know (ModelScope, Pollinations, a provider you add later) counts as shared, so a new provider can never silently see
+private chats. `/limits` tags each provider 🔒 (private) or 🧩 (Extended models only).
+
+- Mistral is private **only while its training switch (Mistral console -> Admin -> Privacy) stays OFF**. If it is ever turned
+  back on, add `mistral` to `SHARED_DATA_PROVIDERS`.
+- Gemini: the free (unpaid) API may use content to improve Google products and human reviewers may read it. It becomes a
+  "Paid Service" (no training) only when the Google Cloud project that owns the API key has an **active billing account**. That
+  is NOT free: usage is billed from a prepaid balance (minimum prepay applies, credits run out, and when they reach zero the
+  API stops with an error). Only after doing that, remove `gemini` from `SHARED_DATA_PROVIDERS`.
+- Google's terms (effective 23 March 2026) also say: unpaid Gemini must not serve people in the EEA, Switzerland or the UK; the
+  app must not be likely to be used by anyone under 18; do not send sensitive information to unpaid services. The bot cannot
+  see a person's country, so before a public launch either link billing (Gemini then becomes private and the whole question
+  goes away) or accept the risk knowingly. The Details wording already says Extended models is for people 18 and over.
+- OpenRouter: free routes differ per model. OpenRouter has an account setting for free models ("allow providers that may train
+  on your data"); with it off, OpenRouter will not route to providers that train. Its terms (Jul 2026) also forbid reselling API
+  access or building a competing service: have a lawyer read them before OpenRouter carries paying users' chats.
+
+**Wording.** One copy in `DATA_SHARING_COPY` (`lib/dataUse.js`), sent by the settings API so the mini app, the DM bot and the
+tests always agree. It never names a provider. If you change it in a way that matters, bump `DATA_SHARING_VERSION`: everyone who
+said yes to the old wording is asked again (and counts as "no" until they answer). A "no" is never re-asked.
+
+**Fails closed.** If the database cannot be read, `allowsSharedModels()` returns false. A caller that forgets to pass
+`allowShared` is treated as private. `tests/dataSharing.test.mjs` proves both, with a pretend network that records every host
+called.
+
+**Database.** Run `db/migrate_data_sharing_v16.sql` in the Neon SQL editor BEFORE deploying (the settings API reads the new
+columns). Safe to run twice.
+
+**Tests.** `node --no-deprecation tests/dataSharing.test.mjs` (privacy rules end to end) and
+`npm install --no-save jsdom && node tests/ui-extended-models.test.cjs` (runs the real page in jsdom).
+
+**Privacy policy.** A draft is in `PRIVACY-POLICY-DRAFT.md`. Ethiopia's Personal Data Protection Proclamation 1321/2024 needs
+freely given, specific, informed, unambiguous consent and covers sending data abroad: have a local lawyer read the draft and
+the Details wording before launch.
+
+**Other free providers (checked 21 Oct 2026).** Nothing new is worth adding to the shared group: NVIDIA NIM and Cohere are
+evaluation-only, SambaNova allows 20 requests a day per model, Hyperbolic and Cerebras now need a deposit or a card, GitHub
+Models was shut down by GitHub on 30 Jul 2026, ModelScope is non-commercial and needs a verified Alibaba account, SiliconFlow's
+free models need China real-name verification, and the keyless services (Pollinations, LLM7) give no promise about your data.
+Gemini, OpenRouter's free routes and Z.ai are already the shared group.
 
 ## Access control
 
@@ -417,7 +477,14 @@ Max runs on **Groq's Qwen 3.8 27B**. Why that one, and what keeps it working:
 - OpenRouter is no longer in the Standard chain (its free Gemma has been rate-limited upstream in every health report), so
   Standard is Groq -> Cloudflare -> Ministral 14B -> Ministral 3B (the Ministral models have the most headroom on this key:
   30-750 requests a minute). `OPENROUTER_IN_STANDARD=1` brings it back.
-- Max is capped **per user** (Pro 5/day, Premium 10/day) and **site-wide** (`MAX_SITE_DAILY_CAP`, default 40 per rolling 24h).
+- **Cloudflare first, in a slice.** Max tries a big model on Cloudflare's own GPUs first (DeepSeek V4 Pro by default; Cloudflare's
+  Workers AI terms say it does not train on or reuse your content). Cloudflare's free allowance is one 9,000-neuron pool a day
+  shared by images, vision, Flash, Standard's fallback and Max, and this model costs ~660 neurons a typical reply, so Max gets only
+  its own slice (`CF_MAX_NEURON_DAILY_CAP`, 4,000 ≈ 6 replies) and Standard's Cloudflare fallback is cut to a smaller one
+  (`CF_STANDARD_NEURON_DAILY_CAP`, 3,000 ≈ 20 replies) — at least 2,000 neurons stay for images and vision. When a slice is spent that
+  tier skips Cloudflare until 00:00 UTC (Max -> Groq's Qwen, Standard -> Ministral). Max's Cloudflare model is skipped in `/think`
+  mode (reasoning tokens bill as output). `/health` shows both slices and `/limits` shows replies-a-day per model.
+- Max is capped **per user** (Pro 5/day, Premium 10/day) and **site-wide** (`MAX_SITE_DAILY_CAP`, default 200 per rolling 24h — Groq gives Qwen its own 1,000 requests a day; the default drops to 40 if you opt in to an OpenRouter Max model, whose shared free pool is ~50 a day).
   Hitting either never errors: the reply runs on Standard and says so.
 - A Max reply is counted only when a Max model really answered (`MAX_MODEL_IDS` in `lib/ai.js`), so falling back costs nothing.
 - A model's hidden reasoning (`<think>...</think>`) is stripped before a reply is shown, and an upstream failure that a provider
@@ -545,7 +612,7 @@ Chains (first available wins, then the next):
 
 - **Standard:** Groq gpt-oss-120b -> Cerebras (if keyed) -> Cloudflare gpt-oss-120b -> OpenRouter (Gemma 4 31B free) -> Ministral 14B -> Mistral Small -> Gemini
 - **Flash:** Groq gpt-oss-20b (llama-3.1-8b-instant was shut down 16 Aug 2026) -> Cloudflare llama-3.1-8b -> Ministral 8B -> Standard chain
-- **Max:** Groq's `qwen/qwen3.8-27b` (`GROQ_MAX_MODEL`; Groq limits are per model, so Standard can't use it up) -> Standard chain. With `MISTRAL_MAX_ENABLED=1`, Mistral Medium 3.5 (pinned `mistral-medium-3-5`; Large 3/4 return 403 on a free key) goes first. Max is capped per user and site-wide (`MAX_SITE_DAILY_CAP`, default 40). OpenRouter Max is opt-in only (`OPENROUTER_MAX_MODEL`).
+- **Max:** Cloudflare's `deepseek-v4-pro-0813` (`CF_MAX_MODEL`) while Max's daily slice of Cloudflare neurons lasts (`CF_MAX_NEURON_DAILY_CAP`, default 4,000 ≈ 6 replies), then Groq's `qwen/qwen3.8-27b` (`GROQ_MAX_MODEL`; its own quota) -> Standard chain. With `MISTRAL_MAX_ENABLED=1`, Mistral Medium 3.5 goes first. Max is capped per user and site-wide (`MAX_SITE_DAILY_CAP`, default 200). OpenRouter Max is opt-in only (`OPENROUTER_MAX_MODEL`).
 - **Extra:** four Gemini Flash models -> Max -> Standard chain
 - **Think mode** skips Cloudflare (reasoning tokens bill as output and drain the shared pool)
 - **Image generation:** Cloudflare FLUX.1 [schnell] -> Pollinations Flux 1024 -> Pollinations defaults

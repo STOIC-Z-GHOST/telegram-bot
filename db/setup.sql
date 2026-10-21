@@ -27,6 +27,9 @@ CREATE INDEX IF NOT EXISTS messages_chat_id_idx ON messages(chat_id);
 CREATE TABLE IF NOT EXISTS user_settings (
   telegram_user_id BIGINT PRIMARY KEY,
   memory_enabled BOOLEAN NOT NULL DEFAULT false,
+  data_sharing BOOLEAN,
+  data_sharing_version INTEGER,
+  data_sharing_at TIMESTAMP,
   created_at TIMESTAMP NOT NULL DEFAULT now(),
   updated_at TIMESTAMP NOT NULL DEFAULT now()
 );

@@ -32,9 +32,9 @@ check("empty string stays empty", cleanModelText("") === "");
 // ---- model choices
 const cat = providerCatalog();
 const ids = cat.openAiCompatible.map((r) => r.model);
-check("by default Max runs on Groq's Qwen 3.8 27B (its own quota); Mistral Max (blocked on this key) and OpenRouter Max (logs prompts for NVIDIA) are NOT in the chain", cat.openAiCompatible.filter((r) => r.tier === "max").length === 1 && cat.openAiCompatible.some((r) => r.tier === "max" && r.name === "Groq Max" && r.model === "qwen/qwen3.8-27b") && !cat.openAiCompatible.some((r) => r.name === "Mistral Max" || r.name === "OpenRouter Max"));
+check("by default Max = Cloudflare's DeepSeek V4 Pro (within its daily neuron slice) then Groq's Qwen 3.8 27B; Mistral Max (blocked on this key) and OpenRouter Max (logs prompts for NVIDIA) are NOT in the chain", cat.openAiCompatible.filter((r) => r.tier === "max").map((r) => r.name).join(">") === "Cloudflare Max>Groq Max" && cat.openAiCompatible.some((r) => r.tier === "max" && r.name === "Groq Max" && r.model === "qwen/qwen3.8-27b") && cat.openAiCompatible.some((r) => r.name === "Cloudflare Max" && r.model === "@cf/deepseek-ai/deepseek-v4-pro-0813") && !cat.openAiCompatible.some((r) => r.name === "Mistral Max" || r.name === "OpenRouter Max"));
 check("no free NVIDIA route is used anywhere by default", !cat.openAiCompatible.some((r) => /nvidia/i.test(r.model)));
-check("the Max model has no dollar budget (it is free); the daily Max caps are its guard", cat.openAiCompatible.find((r) => r.tier === "max").budget === null);
+check("Cloudflare Max is guarded by the neuron pot AND its own slice; Groq Max has no budget (the daily Max caps are its guard)", cat.openAiCompatible.find((r) => r.name === "Cloudflare Max")?.subBudget === "cloudflare_max" && cat.openAiCompatible.find((r) => r.name === "Cloudflare Max").budget === "cloudflare" && cat.openAiCompatible.find((r) => r.name === "Groq Max").budget === null);
 check("no retired model ids remain", !ids.includes("llama-3.1-8b-instant") && !ids.includes("openai/gpt-oss-120b:free") && !ids.includes("qwen/qwen2.5-vl-32b-instruct:free"), ids.join(" | "));
 const flash = cat.openAiCompatible.find((r) => r.tier === "flash" && /groq/.test(r.baseUrl));
 check("fast mode's Groq model is gpt-oss-20b (Groq's own replacement)", flash.model === "openai/gpt-oss-20b");
@@ -72,19 +72,20 @@ try {
   const b = runWith({ OPENROUTER_IN_STANDARD: "1", OPENROUTER_MODEL: "openai/gpt-oss-120b", OPENROUTER_VISION_MODEL: "anthropic/claude-sonnet-4.5", OPENROUTER_MAX_MODEL: "anthropic/claude-opus-4" });
   check("a NON-free OpenRouter id is refused (it would bill you) -> default kept for text and vision; a non-free Max id leaves OpenRouter Max OFF", b.orText === "google/gemma-4-31b-it:free" && b.orVision === "google/gemma-4-26b-a4b-it:free" && b.orMax === null, JSON.stringify(b));
   const c2 = runWith({});
-  check("nothing set -> the built-in defaults (no OpenRouter in Standard; Max = Groq Max only)", c2.groqFlash === "openai/gpt-oss-20b" && c2.orText === null && c2.orMax === null && c2.maxFirst === "Groq Max");
+  check("nothing set -> the built-in defaults (no OpenRouter in Standard; Max = Cloudflare Max then Groq Max)", c2.groqFlash === "openai/gpt-oss-20b" && c2.orText === null && c2.orMax === null && c2.maxFirst === "Cloudflare Max>Groq Max");
   const g1 = runWith({ GROQ_MAX_MODEL: "openai/gpt-oss-safeguard-20b" });
-  check("GROQ_MAX_MODEL changes the Max model", g1.maxModels === "openai/gpt-oss-safeguard-20b", g1.maxModels);
+  check("GROQ_MAX_MODEL changes Groq's Max model", g1.maxModels === "@cf/deepseek-ai/deepseek-v4-pro-0813>openai/gpt-oss-safeguard-20b", g1.maxModels);
   const g2 = runWith({ GROQ_MAX_MODEL: "   " });
-  check("a blank GROQ_MAX_MODEL falls back to the default", g2.maxModels === "qwen/qwen3.8-27b", g2.maxModels);
+  check("a blank GROQ_MAX_MODEL falls back to the default", g2.maxModels === "@cf/deepseek-ai/deepseek-v4-pro-0813>qwen/qwen3.8-27b", g2.maxModels);
   const m1 = runWith({ OPENROUTER_MAX_MODEL: "meta/llama:free" });
-  check("OPENROUTER_MAX_MODEL is OPT-IN: setting a :free id adds OpenRouter Max behind Groq Max", m1.orMax === "meta/llama:free" && m1.maxFirst === "Groq Max>OpenRouter Max", m1.maxFirst);
+  check("OPENROUTER_MAX_MODEL is OPT-IN: setting a :free id adds OpenRouter Max behind Groq Max", m1.orMax === "meta/llama:free" && m1.maxFirst === "Cloudflare Max>Groq Max>OpenRouter Max", m1.maxFirst);
   const m2 = runWith({ MISTRAL_MAX_ENABLED: "1" });
-  check("MISTRAL_MAX_ENABLED=1 puts Mistral Max FIRST in Max's chain, with the free Groq model behind it", m2.maxFirst === "Mistral Max>Groq Max", m2.maxFirst);
+  check("MISTRAL_MAX_ENABLED=1 puts Mistral Max FIRST in Max's chain, with Cloudflare Max and Groq Max behind it", m2.maxFirst === "Mistral Max>Cloudflare Max>Groq Max", m2.maxFirst);
   const m3 = runWith({ MISTRAL_MAX_ENABLED: "true" });
   const m4 = runWith({ MISTRAL_MAX_ENABLED: "0" });
-  check("'true' also turns it on; '0' leaves it off", m3.maxFirst === "Mistral Max>Groq Max" && m4.maxFirst === "Groq Max");
-  check("all three together keep that order", runWith({ MISTRAL_MAX_ENABLED: "1", OPENROUTER_MAX_MODEL: "meta/llama:free" }).maxFirst === "Mistral Max>Groq Max>OpenRouter Max");
+  check("'true' also turns it on; '0' leaves it off", m3.maxFirst === "Mistral Max>Cloudflare Max>Groq Max" && m4.maxFirst === "Cloudflare Max>Groq Max");
+  check("all four together keep that order", runWith({ MISTRAL_MAX_ENABLED: "1", OPENROUTER_MAX_MODEL: "meta/llama:free" }).maxFirst === "Mistral Max>Cloudflare Max>Groq Max>OpenRouter Max");
+  check("CF_MAX_MODEL=off removes Cloudflare Max (Max = Groq's Qwen alone)", runWith({ CF_MAX_MODEL: "off" }).maxFirst === "Groq Max");
   const m5 = runWith({ OPENROUTER_IN_STANDARD: "1" });
   check("OPENROUTER_IN_STANDARD=1 brings OpenRouter back into Standard, after Cloudflare and before Ministral 14B", /Cloudflare>OpenRouter>Ministral 14B/.test(m5.stdOrder), m5.stdOrder);
 } finally {
@@ -129,7 +130,11 @@ console.log(JSON.stringify({ model: m.model, cost: m.cost.usdPerM }));
     const scenario = process.env.SCENARIO;
     const reply = (content) => new Response(JSON.stringify({ choices: [{ message: { content } }], usage: { total_tokens: 12 } }), { status: 200 });
     globalThis.fetch = async (url, o) => {
-      const model = JSON.parse(o.body).model;
+      let model; try { model = JSON.parse(o.body).model; } catch { model = undefined; }
+      if (model === "@cf/deepseek-ai/deepseek-v4-pro-0813") {
+        if (scenario === "cf429") return new Response(JSON.stringify({ errors: [{ message: "Rate limit exceeded" }] }), { status: 429 });
+        return reply("CF Max answer.");
+      }
       if (model === "qwen/qwen3.8-27b") {
         if (scenario === "error200") return new Response(JSON.stringify({ error: { code: 502, message: "Upstream error from Nvidia: Service temporarily overloaded" } }), { status: 200 });
         if (scenario === "think") return reply("<think>planning the answer</think>Max answer.");
@@ -139,11 +144,11 @@ console.log(JSON.stringify({ model: m.model, cost: m.cost.usdPerM }));
       return reply("Standard answer.");
     };
     const { getConversationReply } = await import("../lib/ai.js");
-    const r = await getConversationReply([{ role: "user", content: "hi" }], {}, { tier: "max" });
+    const r = await getConversationReply([{ role: "user", content: "hi" }], {}, { tier: "max", thinking: scenario === "cfthink" });
     process.stdout.write("\\n" + JSON.stringify({ text: r.text, servedBy: r.servedBy, warns }));
   `);
   try {
-    const flow = (scenario) => JSON.parse(execFileSync(process.execPath, ["--no-deprecation", probe3], { env: { PATH: process.env.PATH, SCENARIO: scenario, DATABASE_URL: "postgres://u:p@localhost.invalid/db", GROQ_API_KEY: "g", MISTRAL_API_KEY: "m", OPENROUTER_API_KEY: "o", GEMINI_API_KEY: "x" }, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim().split("\n").pop());
+    const flow = (scenario) => JSON.parse(execFileSync(process.execPath, ["--no-deprecation", probe3], { env: { PATH: process.env.PATH, SCENARIO: scenario, DATABASE_URL: "postgres://u:p@localhost.invalid/db", GROQ_API_KEY: "g", MISTRAL_API_KEY: "m", OPENROUTER_API_KEY: "o", GEMINI_API_KEY: "x", ...(/^cf/.test(scenario) ? { CLOUDFLARE_ACCOUNT_ID: "acc", CLOUDFLARE_API_TOKEN: "tok" } : {}) }, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim().split("\n").pop());
     const ok = flow("ok");
     check("Max answered by Groq's Qwen counts as a Max reply (servedBy is the Max model)", ok.text === "Max answer." && ok.servedBy === "qwen/qwen3.8-27b", JSON.stringify(ok));
     const e = flow("error200");
@@ -151,6 +156,12 @@ console.log(JSON.stringify({ model: m.model, cost: m.cost.usdPerM }));
     check("…and the user still gets a Standard answer (servedBy is NOT a Max model, so it is not counted as a Max reply)", e.text === "Standard answer." && e.servedBy === "openai/gpt-oss-120b", JSON.stringify(e));
     const t = flow("think");
     check("a Max reply with hidden <think> reasoning is delivered without it", t.text === "Max answer." && t.servedBy === "qwen/qwen3.8-27b", JSON.stringify(t));
+    const cfOk = flow("cfok");
+    check("with Cloudflare configured, Max is answered by Cloudflare's big model FIRST (and counts as a Max reply)", cfOk.text === "CF Max answer." && cfOk.servedBy === "@cf/deepseek-ai/deepseek-v4-pro-0813", JSON.stringify(cfOk));
+    const cf429 = flow("cf429");
+    check("when Cloudflare Max is rate-limited, Max falls to Groq's Qwen (still a Max reply), not straight to Standard", cf429.text === "Max answer." && cf429.servedBy === "qwen/qwen3.8-27b", JSON.stringify(cf429));
+    const cfThink = flow("cfthink");
+    check("in think mode Cloudflare Max is skipped (reasoning tokens would eat the slice) and Groq's Qwen answers", cfThink.text === "Max answer." && cfThink.servedBy === "qwen/qwen3.8-27b", JSON.stringify(cfThink));
     const c = flow("cutoff");
     check("a Max reply that is only cut-off thinking falls back to Standard", c.text === "Standard answer." && c.servedBy === "openai/gpt-oss-120b", JSON.stringify(c));
   } finally { fs2.rmSync(probe3, { force: true }); }

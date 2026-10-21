@@ -1194,6 +1194,19 @@
   .switch input:checked + .switch-slider { background: var(--button); }
   .switch input:checked + .switch-slider::before { transform: translateX(18px); }
 
+  /* "Extended models" (Settings row + first-run sheet). The two choice buttons are deliberately IDENTICAL in weight so
+     neither is nudged — a consent choice shouldn't have a "good" button and a "skip" button. */
+  .shared-chip { display: inline-block; margin-left: 8px; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; vertical-align: middle; background: var(--secondary-bg); color: var(--link); }
+  .shared-details-btn { background: none; border: none; color: var(--link); font: inherit; font-size: 12.5px; padding: 6px 0 0; cursor: pointer; }
+  .shared-details { margin-top: 10px; padding: 12px 14px; background: var(--secondary-bg); border-radius: 12px; }
+  .shared-details h4 { margin: 12px 0 2px; font-size: 13px; font-weight: 600; }
+  .shared-details h4:first-child { margin-top: 0; }
+  .shared-details p { margin: 0; font-size: 12.5px; line-height: 1.45; color: var(--hint); }
+  .consent-actions { display: flex; flex-direction: column; gap: 10px; margin-top: 16px; }
+  .consent-btn { padding: 13px; border-radius: 12px; font: inherit; font-size: 15px; font-weight: 600; cursor: pointer; background: var(--secondary-bg); color: var(--text); border: 1px solid var(--section-separator); }
+  .consent-btn:disabled { opacity: 0.6; }
+  .consent-error { margin-top: 10px; font-size: 12.5px; color: #d93025; }
+
   .memory-row {
     display: flex;
     align-items: flex-start;
@@ -1434,6 +1447,20 @@
           </label>
         </div>
       </div>
+      <div class="settings-section" id="shared-section">
+        <div class="settings-row">
+          <div>
+            <div class="settings-label"><span id="shared-title">Extended models</span><span class="shared-chip" id="shared-chip">More models</span></div>
+            <div class="settings-hint" id="shared-summary">You get more models when this is on. Some run on free services from other companies, which may keep your chats and use them to improve their AI.</div>
+            <button type="button" class="shared-details-btn" id="shared-details-btn" aria-expanded="false" aria-controls="shared-details">Details</button>
+          </div>
+          <label class="switch">
+            <input type="checkbox" id="shared-toggle" aria-label="Extended models" />
+            <span class="switch-slider"></span>
+          </label>
+        </div>
+        <div class="shared-details" id="shared-details" hidden></div>
+      </div>
       <div class="settings-section">
         <div class="settings-row" style="margin-bottom: 8px;">
           <div class="settings-label">Saved memories</div>
@@ -1551,6 +1578,20 @@
   <h2 class="tier-sheet-title">Your plan</h2>
   <p class="tier-sheet-subtitle" id="plan-sheet-subtitle"></p>
   <div id="plan-sheet-list" class="tier-sheet-list"></div>
+</div>
+
+<div id="consent-overlay" class="tier-sheet-overlay" hidden></div>
+<div id="consent-sheet" class="tier-sheet" role="dialog" aria-modal="true" aria-labelledby="consent-title">
+  <div class="tier-sheet-handle"></div>
+  <h2 class="tier-sheet-title"><span id="consent-title">Extended models</span><span class="shared-chip" id="consent-chip">More models</span></h2>
+  <p class="tier-sheet-subtitle" id="consent-summary">You get more models when this is on. Some run on free services from other companies, which may keep your chats and use them to improve their AI.</p>
+  <button type="button" class="shared-details-btn" id="consent-details-btn" aria-expanded="false" aria-controls="consent-details">Details</button>
+  <div class="shared-details" id="consent-details" hidden></div>
+  <div class="consent-actions">
+    <button type="button" class="consent-btn" id="consent-allow-btn">Turn on Extended models</button>
+    <button type="button" class="consent-btn" id="consent-deny-btn">Keep my chats private</button>
+  </div>
+  <div class="consent-error" id="consent-error" hidden>Couldn't save that — check your connection and try again.</div>
 </div>
 
 <div id="lightbox" class="lightbox" hidden>
@@ -2341,6 +2382,7 @@
     try {
       const settings = await apiFetch("/api/miniapp/settings");
       memoryToggle.checked = !!settings.memoryEnabled;
+      applySharing(settings);
     } catch {
       // Leave it as-is rather than blocking the settings screen over this.
     }
@@ -2360,6 +2402,118 @@
       memoryToggle.disabled = false;
     }
   });
+
+  // --- Extended models: may this person's chats go to AI providers that can keep, use or let staff read them? ---
+  // The wording and the list of such providers live in lib/dataUse.js; the server sends the wording so this screen, the first-run
+  // sheet and the DM bot always say the same thing. Until someone answers (or if anything fails) they are treated as "no".
+  const sharedToggle = document.getElementById("shared-toggle");
+  const sharedTitleEl = document.getElementById("shared-title");
+  const sharedSummaryEl = document.getElementById("shared-summary");
+  const sharedDetailsBtn = document.getElementById("shared-details-btn");
+  const sharedDetailsEl = document.getElementById("shared-details");
+  const consentOverlay = document.getElementById("consent-overlay");
+  const consentSheet = document.getElementById("consent-sheet");
+  const consentTitleEl = document.getElementById("consent-title");
+  const sharedChipEl = document.getElementById("shared-chip");
+  const consentChipEl = document.getElementById("consent-chip");
+  const consentSummaryEl = document.getElementById("consent-summary");
+  const consentDetailsBtn = document.getElementById("consent-details-btn");
+  const consentDetailsEl = document.getElementById("consent-details");
+  const consentAllowBtn = document.getElementById("consent-allow-btn");
+  const consentDenyBtn = document.getElementById("consent-deny-btn");
+  const consentErrorEl = document.getElementById("consent-error");
+  let sharingCopy = null;
+
+  function fillSharingDetails(container) {
+    container.textContent = "";
+    if (!sharingCopy) return;
+    for (const d of sharingCopy.details || []) {
+      const h = document.createElement("h4");
+      h.textContent = d.heading;
+      const p = document.createElement("p");
+      p.textContent = d.text;
+      container.append(h, p);
+    }
+  }
+  function setSharingDetailsOpen(btn, panel, open) {
+    panel.hidden = !open;
+    btn.setAttribute("aria-expanded", String(open));
+    btn.textContent = open ? (sharingCopy?.hideDetailsButton || "Hide details") : (sharingCopy?.detailsButton || "Details");
+  }
+  function applySharing(settings) {
+    if (settings?.dataSharingCopy) {
+      sharingCopy = settings.dataSharingCopy;
+      sharedTitleEl.textContent = sharingCopy.title;
+      consentTitleEl.textContent = sharingCopy.title;
+      if (sharingCopy.badge) { sharedChipEl.textContent = sharingCopy.badge; consentChipEl.textContent = sharingCopy.badge; }
+      sharedSummaryEl.textContent = sharingCopy.summary;
+      consentSummaryEl.textContent = sharingCopy.summary;
+      consentAllowBtn.textContent = sharingCopy.allowButton;
+      consentDenyBtn.textContent = sharingCopy.denyButton;
+      fillSharingDetails(sharedDetailsEl);
+      fillSharingDetails(consentDetailsEl);
+      setSharingDetailsOpen(sharedDetailsBtn, sharedDetailsEl, !sharedDetailsEl.hidden);
+      setSharingDetailsOpen(consentDetailsBtn, consentDetailsEl, !consentDetailsEl.hidden);
+    }
+    sharedToggle.checked = !!settings?.dataSharing?.allow;
+  }
+  sharedDetailsBtn.addEventListener("click", () => setSharingDetailsOpen(sharedDetailsBtn, sharedDetailsEl, sharedDetailsEl.hidden));
+  consentDetailsBtn.addEventListener("click", () => setSharingDetailsOpen(consentDetailsBtn, consentDetailsEl, consentDetailsEl.hidden));
+
+  sharedToggle.addEventListener("change", async () => {
+    const desired = sharedToggle.checked;
+    sharedToggle.disabled = true;
+    try {
+      await apiFetch("/api/miniapp/settings", { method: "POST", body: JSON.stringify({ dataSharing: desired }) });
+    } catch {
+      sharedToggle.checked = !desired; // revert on failure — never show "on" if it didn't save
+    } finally {
+      sharedToggle.disabled = false;
+    }
+  });
+
+  // The first-run sheet: shown once to everyone who hasn't answered (and again if the wording changes). It can't be dismissed by
+  // tapping outside — each button is a real answer, and "Keep my chats private" is exactly as easy to press as the other one.
+  function openConsentSheet() {
+    consentErrorEl.hidden = true;
+    consentOverlay.hidden = false;
+    requestAnimationFrame(() => {
+      consentOverlay.classList.add("visible");
+      consentSheet.classList.add("open");
+    });
+  }
+  function closeConsentSheet() {
+    consentOverlay.classList.remove("visible");
+    consentSheet.classList.remove("open");
+    setTimeout(() => { consentOverlay.hidden = true; }, 250);
+  }
+  async function answerSharing(allow) {
+    consentAllowBtn.disabled = true;
+    consentDenyBtn.disabled = true;
+    consentErrorEl.hidden = true;
+    try {
+      await apiFetch("/api/miniapp/settings", { method: "POST", body: JSON.stringify({ dataSharing: allow }) });
+      sharedToggle.checked = allow;
+      closeConsentSheet();
+    } catch {
+      consentErrorEl.hidden = false; // stays open: nothing was saved
+    } finally {
+      consentAllowBtn.disabled = false;
+      consentDenyBtn.disabled = false;
+    }
+  }
+  consentAllowBtn.addEventListener("click", () => answerSharing(true));
+  consentDenyBtn.addEventListener("click", () => answerSharing(false));
+
+  async function maybeAskSharing() {
+    try {
+      const settings = await apiFetch("/api/miniapp/settings");
+      applySharing(settings);
+      if (settings.dataSharing?.needsAnswer) openConsentSheet();
+    } catch {
+      // If it can't be read nothing is shared (the server fails closed), and the app must not be blocked over it.
+    }
+  }
 
   // --- Memory list (view / add / edit / delete) ---
   let memoryLimit = 5;
@@ -3397,6 +3551,15 @@
     }
   });
 
+  // Unique storage path for one upload: <random id>/<cleaned original name>. Names are cleaned so odd characters cannot break the path.
+  function uniqueUploadPath(fileName) {
+    const id = (globalThis.crypto && typeof globalThis.crypto.randomUUID === "function")
+      ? globalThis.crypto.randomUUID()
+      : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
+    const clean = String(fileName || "file").replace(/[\\/:*?"<>|\u0000-\u001f]+/g, "_").replace(/^\.+/, "").slice(0, 120) || "file";
+    return `${id}/${clean}`;
+  }
+
   composerEl.addEventListener("submit", async (e) => {
     e.preventDefault();
     const text = inputEl.value.trim();
@@ -3452,11 +3615,20 @@
         // this is the only reliable way to authenticate this call.
         uploadedAttachments = await Promise.all(
           files.map(async (file) => {
-            const blob = await upload(file.name, file, {
-              access: "public",
-              handleUploadUrl: "/api/miniapp/blob-upload",
-              clientPayload: initData,
-            });
+            // Every upload gets its own folder. A bare file.name made the second person (or the same person, or two files
+            // with the same name in one message) who sent "core 1 exercise.pdf" hit "this blob already exists". Overwriting
+            // is NOT the answer: it would let one person replace another person's file. The original name is kept for display.
+            let blob;
+            try {
+              blob = await upload(uniqueUploadPath(file.name), file, {
+                access: "public",
+                handleUploadUrl: "/api/miniapp/blob-upload",
+                clientPayload: initData,
+              });
+            } catch (uploadErr) {
+              console.error("upload failed:", uploadErr);
+              throw new Error(`Couldn't upload "${file.name}". Please try again.`);
+            }
             return { url: blob.url, name: file.name, type: file.type, bytes: file.size };
           })
         );
@@ -3499,6 +3671,7 @@
   } else {
     const started = Date.now();
     loadUsage(); // fire-and-forget — just needs maxImagesPerMessage set before the composer is used, no reason to block the splash on it
+    maybeAskSharing(); // fire-and-forget — asks the one-time Extended-models question if this person hasn't answered yet
     Promise.race([loadChats(), new Promise((r) => setTimeout(r, MAX_SPLASH_MS))]).finally(() => {
       const elapsed = Date.now() - started;
       setTimeout(hideSplash, Math.max(0, MIN_SPLASH_MS - elapsed));

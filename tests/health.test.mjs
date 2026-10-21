@@ -80,7 +80,7 @@ function makeFetch(overrides = {}) {
   };
 }
 const realFetch = globalThis.fetch;
-const budgets = (m = 1_200_000, mx = 400_000, cf = 2_000) => async () => ({ mistral: { spent: m, cap: 8_500_000 }, mistral_max: { spent: mx, cap: 5_000_000 }, cloudflare: { spent: cf, cap: 9_000 } });
+const budgets = (m = 1_200_000, mx = 400_000, cf = 2_000, cfMax = 500, cfStd = 300) => async () => ({ mistral: { spent: m, cap: 8_500_000 }, mistral_max: { spent: mx, cap: 5_000_000 }, cloudflare: { spent: cf, cap: 9_000 }, cloudflare_max: { spent: cfMax, cap: 4_000 }, cloudflare_standard: { spent: cfStd, cap: 3_000 } });
 const deps = { catalog, dbTables: async () => ["a", "b"], expectedTables: async () => ["a", "b"], blobList: async () => {}, budgetStatus: budgets() };
 // The provider list is built from the keys present at import time, so a "key removed" scenario
 // must remove it from the list too (in production env and list always agree).
@@ -205,7 +205,8 @@ check("Cloudflare model absent from the catalog search -> warn (search can miss)
 globalThis.fetch = makeFetch();
 res = await run({ live: true });
 const posts = calls.filter((x) => x.method === "POST");
-check("live: Groq's two chat models answer (merged into their model lines)", res.filter((r) => r.group === "Groq" && /answered in/.test(r.detail) && r.status === "ok").length === 2);
+check("live: all three Groq chat models (Standard, Flash and Max) answer (merged into their model lines)", res.filter((r) => r.group === "Groq" && /answered in/.test(r.detail) && r.status === "ok").length === 3);
+check("live: the Groq MAX model is really asked, not just 'listed'", /answered in/.test(find(res, "Groq", "qwen/qwen3.8-27b")?.detail || "") && /max mode/.test(find(res, "Groq", "qwen/qwen3.8-27b")?.detail || ""), find(res, "Groq", "qwen/qwen3.8-27b")?.detail);
 check("live: no separate '— live' lines any more", !res.some((r) => r.name.endsWith("— live")));
 check("live: Gemini live test uses ONLY the roomy lite model", posts.filter((p) => p.url.includes("generateContent")).length === 1 && posts.find((p) => p.url.includes("generateContent")).url.includes("gemini-3.5-flash-lite"), posts.filter((p) => p.url.includes("generateContent")).map((p) => p.url.split("/models/")[1]).join());
 check("live: never calls the 20/day primary Gemini model", !posts.some((p) => p.url.includes("gemini-3.6-flash")));
@@ -215,7 +216,8 @@ check("the default Max model is Medium 3.5", maxModel === "mistral-medium-3-5", 
 check("live: every Mistral model is really asked (a listed model can still be blocked on the plan)", find(res, "Mistral", "mistral-small-2603")?.status === "ok" && /answered in/.test(find(res, "Mistral", "mistral-small-2603").detail), find(res, "Mistral", "mistral-small-2603")?.detail);
 check("live: OpenRouter's image model says it was spared (50/day)", /not live-tested: to save/.test(find(res, "OpenRouter", "gemma-4-26b-a4b-it:free")?.detail || ""));
 check("live: OpenRouter is only asked about its Standard/Max rows (never the vision one), one request each", (() => { const orPosts = posts.filter((p) => p.url.includes("openrouter.ai")); const rows = catalog.openAiCompatible.filter((r) => /openrouter/.test(r.baseUrl) && r.tier !== "vision").length; return orPosts.length === rows && !orPosts.some((p) => /gemma-4-26b/.test(p.body)); })());
-check("live: Cloudflare text + flash + vision answer", res.filter((r) => r.group === "Cloudflare Workers AI" && /(answered|read the test image) in/.test(r.detail) && r.status === "ok").length === 3);
+check("live: Cloudflare text + flash + MAX + vision all answer", res.filter((r) => r.group === "Cloudflare Workers AI" && /(answered|read the test image) in/.test(r.detail) && r.status === "ok").length === 4);
+check("live: the Cloudflare Max model is really asked, and its line says max mode", /answered in/.test(find(res, "Cloudflare Workers AI", "deepseek-v4-pro-0813")?.detail || "") && /max mode/.test(find(res, "Cloudflare Workers AI", "deepseek-v4-pro-0813")?.detail || ""), find(res, "Cloudflare Workers AI", "deepseek-v4-pro-0813")?.detail);
 check("live: no image is generated (no CF /ai/run call)", !posts.some((p) => /\/ai\/run\//.test(p.url)));
 check("live report says so", /Live test: chat models were asked to reply "OK"; image models were shown a small red picture/.test(formatReport(res, { live: true })));
 globalThis.fetch = makeFetch({ "api.groq.com/openai/v1/chat/completions": () => J({ error: { message: "rate limit reached" } }, 429) });
@@ -659,6 +661,28 @@ check("redactor ignores short/non-secret values", makeRedactor({ BOT_NAME: "Assi
   globalThis.fetch = makeFetch({ "api.mistral.ai/v1/chat/completions": (u, o) => (JSON.parse(o.body).model === maxModel ? err200(502, "Upstream overloaded, try again later")() : null) });
   res = await run({ live: true });
   check("the same 200+502 on the PAID Max model (Mistral) stays a warning", find(res, "Mistral", maxModel)?.status === "warn", find(res, "Mistral", maxModel)?.detail);
+}
+
+// ===== 25. the Groq Max model must not hide behind a green 'listed' =====
+{
+  globalThis.fetch = makeFetch({ "api.groq.com/openai/v1/chat/completions": (u, o) => (JSON.parse(o.body).model === "qwen/qwen3.8-27b" ? J({ error: { message: "The model `qwen/qwen3.8-27b` does not exist or you do not have access to it." } }, 404) : null) });
+  res = await run({ live: true });
+  const q = find(res, "Groq", "qwen/qwen3.8-27b");
+  check("a Groq Max model that is listed but not callable is NOT green", q && q.status !== "ok", q?.detail);
+  check("…while Groq's other models are unaffected", ["openai/gpt-oss-120b", "openai/gpt-oss-20b"].every((m) => find(res, "Groq", m)?.status === "ok"));
+}
+
+// ===== 26. the Cloudflare slices in the Budgets block =====
+{
+  globalThis.fetch = makeFetch();
+  res = await run({}, { budgetStatus: budgets(1_200_000, 400_000, 2_000, 500, 300) });
+  const bm = res.find((r) => r.group === "Budgets" && /Max mode's slice/.test(r.name) && /neurons/.test(r.detail));
+  const bs = res.find((r) => r.group === "Budgets" && /Standard's fallback slice/.test(r.name));
+  check("Budgets shows Max's Cloudflare slice (neurons, of its 4,000)", bm?.status === "ok" && /500 neurons of 4,000 neurons/.test(bm.detail), bm?.detail);
+  check("Budgets shows Standard's Cloudflare slice (of its 3,000)", bs?.status === "ok" && /300 neurons of 3,000 neurons/.test(bs.detail), bs?.detail);
+  res = await run({}, { budgetStatus: budgets(1_200_000, 400_000, 2_000, 4_000, 300) });
+  const full = res.find((r) => r.group === "Budgets" && /Max mode's slice/.test(r.name) && /neurons/.test(r.detail));
+  check("a spent Max slice is a warning that says what happens (Max falls back to Groq's Qwen)", full?.status === "warn" && /used up/.test(full.detail) && /Qwen/.test(full.detail), full?.detail);
 }
 
 globalThis.fetch = realFetch;

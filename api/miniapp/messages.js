@@ -55,6 +55,7 @@ import { requireTelegramUser } from "../../lib/telegramAuth.js";
 import { getConversationReply, MODEL_TIER_MIN_PLAN, MAX_MODEL_IDS } from "../../lib/ai.js";
 import { searchWeb, condenseSearchOutcomeForCache, SEARCH_CACHE_FRESHNESS_MS } from "../../lib/search.js";
 import { analyzeAttachments } from "../../lib/attachments.js";
+import { allowsSharedModels } from "../../lib/dataSharing.js";
 import { generateImage, extractImageGenMarker, plausiblyImageRequest, friendlyImageError } from "../../lib/imagegen.js";
 import { detectFileRequest } from "../../lib/fileGen/detect.js";
 import { createFile, FileGenError, FILE_FORMATS, asciiSlug } from "../../lib/fileGen/index.js";
@@ -231,7 +232,9 @@ async function editAndSaveFile(res, chat, userId, editRequest) {
 // reliably viewable in this chat's history later, and saves the result as
 // the assistant's message. Responds on res itself and returns nothing —
 // callers just call it and return.
-async function generateAndSaveImage(res, chat, userId, prompt) {
+// allowShared: true only for someone who turned Extended models on — only then may the prompt go to an image service that is not
+// private (lib/imagegen.js must honour opts.allowShared; see PATCH-imagegen.md).
+async function generateAndSaveImage(res, chat, userId, prompt, allowShared = false) {
   const imageLimitCheck = await checkImageGenLimit(userId);
   if (!imageLimitCheck.allowed) {
     res.status(429).json({ error: "rate_limited", message: imageLimitCheck.reason });
@@ -241,7 +244,7 @@ async function generateAndSaveImage(res, chat, userId, prompt) {
   let assistantContent;
   let attachment = null;
   try {
-    const { buffer, mimeType } = await generateImage(prompt);
+    const { buffer, mimeType } = await generateImage(prompt, { allowShared });
     const blob = await put(`generated-images/${chat.id}-${Date.now()}.jpg`, buffer, {
       access: "public",
       contentType: mimeType,
@@ -471,10 +474,13 @@ export default async function handler(req, res) {
     // Pollinations returns image bytes directly, not something that goes
     // through Gemini/Groq at all.
     if (imageMatch) {
-      await generateAndSaveImage(res, chat, user.id, imageMatch[2].trim());
+      await generateAndSaveImage(res, chat, user.id, imageMatch[2].trim(), await allowsSharedModels(user.id));
       return;
     }
 
+    // "Extended models": true only if this person turned it on (and said yes to the current wording). Everything below that can
+    // send their words, photos or files to a provider that may keep or read them checks this; it fails closed (false).
+    const allowShared = await allowsSharedModels(user.id);
     let rawReply, tokensUsed;
     let imageMarkerAllowed = true; // set per message below; read again after the AI call, outside the block that sets it
     let tierNote = fileFallbackNote; // one-line explanation appended to the reply (Extra ran on Max instead, or a file request fell back to text)
@@ -483,7 +489,7 @@ export default async function handler(req, res) {
     let searchCacheFields = {}; // merged into the end-of-request chat UPDATE below, only ever set on a successful live search
 
     if (hasAttachment) {
-      const result = await analyzeAttachments(attachments, trimmedContent);
+      const result = await analyzeAttachments(attachments, trimmedContent, { allowShared });
       rawReply = result.text;
       tokensUsed = result.tokensUsed;
       const totalBytes = attachments.reduce((sum, a) => sum + (a.bytes || 0), 0);
@@ -500,6 +506,12 @@ export default async function handler(req, res) {
       const savedMemories = memoryOn ? (await listMemories(user.id)).map((m) => m.content) : [];
       const memoryOptions = { savedMemories, allowMemorySave: memoryOn };
       let modelTier = await resolveModelTier(requestedTier, user.id);
+      // Extra runs ONLY on Google's free Gemini quota, which may keep and let staff read chats — so it needs Extended models.
+      // Without it the reply runs on Max (private) instead, and says so.
+      if (modelTier === "extra" && !allowShared) {
+        modelTier = "max";
+        tierNote = "Extra needs Extended models — turn them on in Settings (read what it means first). This reply used Max instead.";
+      }
       // Extra runs on a shared free Gemini quota, so it has its own daily
       // budgets (see checkExtraLimit in lib/limits.js). Over budget isn't an
       // error — the reply just runs on Max instead, and says so.
@@ -542,7 +554,7 @@ export default async function handler(req, res) {
 
       let searchOutcome = null;
       if (wantsSearch) {
-        searchOutcome = await searchWeb(trimmedContent, historyForAi, memoryOptions, user.id);
+        searchOutcome = await searchWeb(trimmedContent, historyForAi, memoryOptions, user.id, { allowShared });
       } else if (chat.lastSearchContext && chat.lastSearchAt && Date.now() - chat.lastSearchAt.getTime() < SEARCH_CACHE_FRESHNESS_MS) {
         memoryOptions.cachedSearchContext = chat.lastSearchContext;
       }
@@ -558,6 +570,7 @@ export default async function handler(req, res) {
           thinking: wantsThinking || wantsCodeReview,
           codeReview: wantsCodeReview,
           tier: modelTier,
+          allowShared,
         });
       }
       rawReply = result.text;
@@ -596,7 +609,7 @@ export default async function handler(req, res) {
       // Belt and braces: if the instruction wasn't offered for this message, a
       // marker that shows up anyway is a misfire — never spend an image on it.
       if (naturalImagePrompt && imageMarkerAllowed) {
-        await generateAndSaveImage(res, chat, user.id, naturalImagePrompt);
+        await generateAndSaveImage(res, chat, user.id, naturalImagePrompt, allowShared);
         return;
       }
     }

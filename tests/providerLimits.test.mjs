@@ -17,6 +17,8 @@ const catalog = {
     { tier: "standard", name: "OpenRouter Gemma", baseUrl: "https://openrouter.ai/api/v1", apiKey: KEYS.or, model: "google/gemma-4-31b-it:free" },
     { tier: "standard", name: "Cloudflare gpt-oss", baseUrl: "https://api.cloudflare.com/client/v4/accounts/ACC/ai/v1", apiKey: KEYS.cf, model: "@cf/openai/gpt-oss-120b" },
     { tier: "flash", name: "Cloudflare llama", baseUrl: "https://api.cloudflare.com/client/v4/accounts/ACC/ai/v1", apiKey: KEYS.cf, model: "@cf/meta/llama-3.1-8b-instruct-fast" },
+    { tier: "max", name: "Cloudflare Max", baseUrl: "https://api.cloudflare.com/client/v4/accounts/ACC/ai/v1", apiKey: KEYS.cf, model: "@cf/deepseek-ai/deepseek-v4-pro-0813", budget: "cloudflare", subBudget: "cloudflare_max", cost: { neuronsPer1K: { in: 120, out: 360 } } },
+    { tier: "standard", name: "Cloudflare", baseUrl: "https://api.cloudflare.com/client/v4/accounts/ACC/ai/v1", apiKey: KEYS.cf, model: "@cf/openai/gpt-oss-120b", budget: "cloudflare", subBudget: "cloudflare_standard", cost: { neuronsPer1K: { in: 31.8, out: 68.2 } } },
     { tier: "flash", name: "Cloudflare old llama", baseUrl: "https://api.cloudflare.com/client/v4/accounts/ACC/ai/v1", apiKey: KEYS.cf, model: "@cf/meta/llama-3.1-8b-instruct-fp8-fast" },
     { tier: "vision", name: "Z.ai vision", baseUrl: "https://api.z.ai/api/paas/v4", apiKey: KEYS.zai, model: "glm-4.6v-flash" },
     { tier: "standard", name: "Unconfigured", baseUrl: "", apiKey: "", model: "x" },
@@ -177,6 +179,37 @@ check("the printed report has the legend and uses stars", /★ = a model the bot
   check("/limits all lists Cloudflare's Text Generation models (and only those)", /gpt-oss-120b/.test(cfNote) && /llama-3\.2-3b-instruct/.test(cfNote) && !/flux/.test(cfNote), cfNote);
   check("without all, it only offers to list them", sec(r, "Cloudflare").notes.some((n) => /Add `all`/.test(n)) && !sec(r, "Cloudflare").notes.some((n) => /Text Generation models you could use/.test(n)));
   check("/limits all lists every other Gemini model by name", /gemini-3.7-flash/.test(sec(ra2, "Gemini").notes[0]) && !/add `all`/.test(sec(ra2, "Gemini").notes[0]));
+}
+
+// ===== a one-off network failure on a plain lookup is retried once (Tavily's usage timed out in a real /limits run) =====
+{
+  let tries = 0;
+  const flaky = makeFetch({ "api.tavily.com/usage": () => { tries++; if (tries === 1) throw new Error("The operation was aborted due to timeout"); return null; } });
+  const rr = await runProviderLimits({ env, catalog, fetchImpl: flaky });
+  const tv = rr.find((x) => x.title.includes("Tavily"));
+  check("a lookup that times out once is retried and then succeeds", tries === 2 && !tv.error && /150 credits used/.test(tv.notes[0]), `tries=${tries} ${tv.error || ""}`);
+  let tries2 = 0;
+  const dead = makeFetch({ "api.tavily.com/usage": () => { tries2++; throw new Error("The operation was aborted due to timeout"); } });
+  const rd = await runProviderLimits({ env, catalog, fetchImpl: dead });
+  check("a lookup that keeps failing is tried exactly twice, then reported", tries2 === 2 && /usage lookup failed/.test(rd.find((x) => x.title.includes("Tavily")).error));
+  const postsBefore = flaky.calls.filter((c) => c.method === "POST").length;
+  let postTries = 0;
+  const flakyPost = makeFetch({ "api.mistral.ai": (u, o) => { if (o.method === "POST" && JSON.parse(o.body).model === "ministral-14b-2512") { postTries++; throw new Error("boom"); } return null; } });
+  await runProviderLimits({ env, catalog, fetchImpl: flakyPost });
+  check("a chat probe is NEVER retried (it would spend a second request of the daily allowance)", postTries === 1, `tries=${postTries} before=${postsBefore}`);
+}
+
+// ===== how far Cloudflare's neuron pool goes for the models the bot uses =====
+{
+  const cfNotes = sec(r, "Cloudflare").notes;
+  const maxNote = cfNotes.find((n) => /^Cloudflare Max/.test(n)) || "";
+  check("Cloudflare Max: ~660 neurons a typical reply -> about 6 replies a day on its 4,000-neuron slice", /deepseek-ai\/deepseek-v4-pro-0813/.test(maxNote) && /about 660 neurons/.test(maxNote) && /roughly 6 replies a day/.test(maxNote) && /4,000-neuron slice/.test(maxNote), maxNote);
+  const stdNote = cfNotes.find((n) => /^Cloudflare \(/.test(n)) || "";
+  check("Standard's fallback: ~148 neurons -> about 20 replies on its 3,000-neuron slice", /about 148 neurons/.test(stdNote) && /roughly 20 replies a day/.test(stdNote) && /3,000-neuron slice/.test(stdNote), stdNote);
+  const flashNote = cfNotes.find((n) => /^Cloudflare llama/.test(n));
+  check("a row with no cost data adds no capacity line", flashNote === undefined);
+  const r2 = await runProviderLimits({ env: { ...env, CF_MAX_NEURON_DAILY_CAP: "8000" }, catalog, fetchImpl: makeFetch() });
+  check("CF_MAX_NEURON_DAILY_CAP changes the estimate (8,000 -> about 12 replies)", /roughly 12 replies a day/.test(r2.find((x) => x.title.includes("Cloudflare")).notes.find((n) => /^Cloudflare Max/.test(n))));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

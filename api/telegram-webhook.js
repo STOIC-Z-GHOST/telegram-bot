@@ -35,6 +35,7 @@
 //   /image <prompt>  generates an image via Pollinations.ai (also /img)
 //   /users           (owner only) lists approved users with a Remove button
 //   /health [live]   (owner only) checks every key + model id; "live" makes each model answer once
+//   /privacy         shows and changes "Extended models" (may your chats go to AI services that can keep or read them)
 //   /limits [all|gemini]  (owner only) asks each provider what your keys can use: models + limits ("all" asks every Groq
 //                     chat model; "gemini" sends one tiny Gemini request). Works with Sensitive env vars, unlike a local script.
 //   /upgrade         shows current plan + Pro/Premium options (Telegram Stars,
@@ -81,6 +82,9 @@ import { detectEditRequest } from "../lib/fileGen/editDetect.js";
 import { editFile } from "../lib/fileGen/edit/index.js";
 import { runHealthCheck, formatReport, splitReport } from "../lib/health.js";
 import { runProviderLimits, formatProviderLimits } from "../lib/providerLimits.js";
+import { allowsSharedModels, getDataSharing, setDataSharing } from "../lib/dataSharing.js";
+import { DATA_SHARING_COPY, dataSharingDmText } from "../lib/dataUse.js";
+import { getConversationReply, getVisionReply as getPrivateVisionReply } from "../lib/ai.js";
 import { classifyFile, ALL_FILES_SUMMARY } from "../lib/fileTypes.js";
 import { extractDocumentText, buildDocumentPrompt } from "../lib/attachments.js";
 import { transcribeAudio } from "../lib/transcribe.js";
@@ -270,10 +274,10 @@ async function fetchAsBase64(url) {
 // the newer gen.pollinations.ai unified API — still works without any API
 // key or billing. Rate-limited to roughly 1 request per 15 seconds for
 // anonymous use, which is plenty for a single-person bot.
-async function askPollinationsImage(prompt) {
+async function askPollinationsImage(prompt, allowShared = false) {
   // Same path as the mini app (Flux at 1024, then the defaults, then the Assist AI
   // badge) — see generateImage in lib/imagegen.js.
-  return generateImage(prompt);
+  return generateImage(prompt, { allowShared }); // honoured by lib/imagegen.js (PATCH-imagegen.md)
 }
 
 async function askGroq(prompt, { thinking = false } = {}) {
@@ -314,10 +318,17 @@ async function askGroq(prompt, { thinking = false } = {}) {
 // tier, see lib/limits.js's checkThinkingLimit for what actually varies
 // by tier (how often you can call it, not how hard it thinks each time).
 // Returns { text, tokensUsed }.
+// opts.allowShared: true only for someone who turned Extended models on (lib/dataSharing.js). Everyone else never reaches Gemini
+// (which may keep and let staff read what it is sent): if Groq fails they get the private chain in lib/ai.js instead
+// (Groq's other models, Cloudflare, Ministral) — it never throws, it returns a "try again" text if everything is down.
 async function getAiReply(prompt, opts = {}) {
   try {
     return await askGroq(prompt, opts);
   } catch (err) {
+    if (opts.allowShared !== true) {
+      console.warn("Groq failed, falling back to the private chain:", err.message);
+      return getConversationReply([{ role: "user", content: prompt }], undefined, { thinking: !!opts.thinking, allowShared: false });
+    }
     console.warn("Groq failed, falling back to Gemini:", err.message);
     try {
       return await askGemini(prompt, opts);
@@ -334,7 +345,13 @@ async function getAiReply(prompt, opts = {}) {
 // Better to fail clearly than silently hand you a less reliable answer.
 // Also used for PDFs sent as documents, since Gemini reads those through
 // the exact same inline_data + mimeType mechanism as images.
-async function getVisionReply(prompt, base64Image, mimeType) {
+// opts.allowShared: without it nothing goes to Gemini — photos and PDFs use the private path in lib/ai.js (Cloudflare's vision model;
+// a PDF through Mistral OCR to the private text chain), the same as the mini app.
+async function getVisionReply(prompt, base64Image, mimeType, opts = {}) {
+  if (opts.allowShared !== true) {
+    const r = await getPrivateVisionReply(prompt, [{ base64: base64Image, mimeType }], { allowShared: false });
+    return r.text;
+  }
   try {
     return await askGeminiVision(prompt, base64Image, mimeType);
   } catch (err) {
@@ -345,7 +362,7 @@ async function getVisionReply(prompt, base64Image, mimeType) {
       try {
         const ocr = await ocrToText(base64Image, "application/pdf");
         if (ocr) {
-          const { text: answer } = await getAiReply(buildOcrPrompt(prompt, ocr));
+          const { text: answer } = await getAiReply(buildOcrPrompt(prompt, ocr), { allowShared: true });
           return answer;
         }
       } catch (ocrErr) {
@@ -452,6 +469,18 @@ async function sendTelegramMessageWithKeyboard(chatId, text, inlineKeyboard) {
   }
 }
 
+// "Extended models" in the DM bot: the same wording and the same two equal buttons as the mini app's first-run sheet.
+// callback_data: ds:1 = turn on, ds:0 = keep private, ds:d = show the details.
+async function sendDataSharingPrompt(chatId, { withDetails = false } = {}) {
+  const c = DATA_SHARING_COPY;
+  const keyboard = [
+    [{ text: c.allowButton, callback_data: "ds:1" }],
+    [{ text: c.denyButton, callback_data: "ds:0" }],
+  ];
+  if (!withDetails) keyboard.push([{ text: c.detailsButton, callback_data: "ds:d" }]);
+  await sendTelegramMessageWithKeyboard(chatId, dataSharingDmText({ withDetails }), keyboard);
+}
+
 // Telegram requires every callback_query to be acknowledged, or the
 // button shows a loading spinner on the tapper's end indefinitely.
 async function answerCallbackQuery(callbackQueryId, text) {
@@ -494,6 +523,29 @@ async function handleCallbackQuery(cq) {
   const chatId = cq.message?.chat?.id;
   const fromId = cq.from?.id;
   const data = cq.data || "";
+
+  if (data === "ds:1" || data === "ds:0") {
+    const on = data === "ds:1";
+    try {
+      await setDataSharing(fromId, on);
+    } catch (err) {
+      console.error("setDataSharing failed:", err.message);
+      await answerCallbackQuery(cq.id, "Couldn't save that — please try again.");
+      return;
+    }
+    await answerCallbackQuery(cq.id, on ? "Extended models are on" : "Your chats stay private");
+    if (cq.message?.message_id) {
+      await editMessageText(chatId, cq.message.message_id, on
+        ? "✅ Extended models are ON. You can change this any time with /privacy or in the chat app's Settings."
+        : "🔒 Your chats stay private. You can change this any time with /privacy or in the chat app's Settings.");
+    }
+    return;
+  }
+  if (data === "ds:d") {
+    await answerCallbackQuery(cq.id);
+    await sendDataSharingPrompt(chatId, { withDetails: true });
+    return;
+  }
 
   if (data === "request_access") {
     await startAccessRequest(fromId, formatDisplayName(cq.from));
@@ -895,6 +947,24 @@ export default async function handler(req, res) {
       await recordPendingReferral(referrerId, chatId);
     }
     await sendStartMessage(chatId);
+    // The one-time Extended-models question (never pre-answered): everyone who hasn't answered yet, and again if the wording changes.
+    try {
+      if ((await getDataSharing(chatId)).needsAnswer) await sendDataSharingPrompt(chatId);
+    } catch (err) {
+      console.warn("couldn't read the Extended-models choice, not asking now:", err.message);
+    }
+    res.status(200).send("OK");
+    return;
+  }
+
+  // Whether this person's chats may go to AI services that can keep or read them (Extended models). Read once per message and passed
+  // to every AI call below; it fails closed, so if the database is unreachable nothing is sent to those services.
+  const allowShared = await allowsSharedModels(chatId);
+
+  if (text === "/privacy") {
+    const st = await getDataSharing(chatId).catch(() => null);
+    await sendTelegramMessage(chatId, st?.allow ? "Extended models are currently ON for you." : "Extended models are currently OFF for you — your chats only go to private models.");
+    await sendDataSharingPrompt(chatId);
     res.status(200).send("OK");
     return;
   }
@@ -1070,7 +1140,7 @@ export default async function handler(req, res) {
       // instead ("pasted as raw code"). Hardcoding it is more reliable.
       const { buffer, mimeType } = await resizeImageIfNeeded(Buffer.from(arrayBuffer), "image/jpeg");
       const base64 = buffer.toString("base64");
-      const answer = await getVisionReply(question, base64, mimeType);
+      const answer = await getVisionReply(question, base64, mimeType, { allowShared });
       await sendTelegramMessage(chatId, answer);
     } catch (err) {
       console.error("Vision pipeline failed:", err.message);
@@ -1119,7 +1189,7 @@ export default async function handler(req, res) {
         // used for images — no text extraction needed, and it handles
         // scanned/image-only PDFs too since it's reading the actual pages.
         const { base64 } = await fetchAsBase64(fileUrl);
-        const answer = await getVisionReply(question, base64, "application/pdf");
+        const answer = await getVisionReply(question, base64, "application/pdf", { allowShared });
         await sendTelegramMessage(chatId, answer);
       } else if (classifyFile(fileName, mimeType) && classifyFile(fileName, mimeType).kind !== "image") {
         // Word, Excel, PowerPoint and text/code/data files — all read by
@@ -1142,7 +1212,7 @@ export default async function handler(req, res) {
               await sendTelegramMessage(chatId, limitCheck.reason);
             } else {
               const prompt = buildDocumentPrompt(question, extracted.text, extracted.truncated);
-              const { text: answer, tokensUsed } = await getAiReply(prompt);
+              const { text: answer, tokensUsed } = await getAiReply(prompt, { allowShared });
               const tier = await getUserTier(chatId);
               // Neither of these needs the other's result — running them
               // concurrently instead of sequentially shaves a round trip.
@@ -1190,14 +1260,14 @@ export default async function handler(req, res) {
       const resp = await fetchWithTimeout(fileUrl, {}, 12000);
       if (!resp.ok) throw new Error(`Failed to download voice note: ${resp.status}`);
       const audio = Buffer.from(await resp.arrayBuffer());
-      const { text: transcript } = await transcribeAudio(audio, voice.mime_type || "audio/ogg");
+      const { text: transcript } = await transcribeAudio(audio, voice.mime_type || "audio/ogg", { allowShared });
       await recordVoiceUsage(chatId, audio.length, voice.duration); // spent even if nothing was heard
       if (!transcript) {
         await sendTelegramMessage(chatId, "🎤 I couldn't make out anything in that voice note — try again a bit closer to the mic, or type it.");
       } else {
         await sendTelegramMessage(chatId, `🎤 ${transcript}`);
         sendTypingAction(chatId);
-        const { text: reply, tokensUsed } = await getAiReply(transcript);
+        const { text: reply, tokensUsed } = await getAiReply(transcript, { allowShared });
         const tier = await getUserTier(chatId);
         await Promise.all([recordMessageUsage(chatId, tokensUsed), sendTelegramMessage(chatId, maybeAddFooter(reply, tier))]);
       }
@@ -1280,7 +1350,7 @@ export default async function handler(req, res) {
     }
     const imagePrompt = imageMatch[2].trim();
     try {
-      const { buffer, mimeType } = await askPollinationsImage(imagePrompt);
+      const { buffer, mimeType } = await askPollinationsImage(imagePrompt, allowShared);
       await Promise.all([sendTelegramPhoto(chatId, buffer, mimeType, imagePrompt), recordImageUsage(chatId)]);
     } catch (err) {
       console.error("Image generation failed:", err.message);
@@ -1313,7 +1383,7 @@ export default async function handler(req, res) {
       return;
     }
     sendTypingAction(chatId);
-    const { text: reply, tokensUsed } = await getAiReply(thinkMatch[1].trim(), { thinking: true });
+    const { text: reply, tokensUsed } = await getAiReply(thinkMatch[1].trim(), { thinking: true, allowShared });
     const tier = await getUserTier(chatId);
     await Promise.all([
       recordMessageUsage(chatId, tokensUsed),
@@ -1341,7 +1411,7 @@ export default async function handler(req, res) {
   }
 
   sendTypingAction(chatId); // fire-and-forget — already swallows its own errors
-  const { text: reply, tokensUsed } = await getAiReply(text);
+  const { text: reply, tokensUsed } = await getAiReply(text, { allowShared });
   const tier = await getUserTier(chatId);
   await Promise.all([recordMessageUsage(chatId, tokensUsed), sendTelegramMessage(chatId, maybeAddFooter(reply, tier))]);
   res.status(200).send("OK");

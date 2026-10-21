@@ -15,6 +15,7 @@ import { requireTelegramUser } from "../../lib/telegramAuth.js";
 import { isOwner } from "../../lib/access.js";
 import { limitsFor, checkVoiceLimit, recordVoiceUsage, TIER_LIMITS } from "../../lib/limits.js";
 import { transcribeAudio, isSupportedAudioMime } from "../../lib/transcribe.js";
+import { allowsSharedModels } from "../../lib/dataSharing.js";
 
 // Base64 inflates by a third, so 3MB of audio is ~4MB on the wire — just
 // under Vercel's 4.5MB body limit.
@@ -65,7 +66,7 @@ export default async function handler(req, res) {
   }
 
   try {
-    const { text } = await transcribeAudio(buffer, mimeType);
+    const { text } = await transcribeAudio(buffer, mimeType, { allowShared: await allowsSharedModels(user.id) });
     // Count it even when nothing was heard — the provider call was still spent.
     await recordVoiceUsage(user.id, buffer.length, clipSeconds);
     if (!text) {
