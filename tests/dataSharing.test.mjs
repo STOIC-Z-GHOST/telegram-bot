@@ -60,6 +60,15 @@ check("the two answers are equally plain and neither is pre-selected", DATA_SHAR
 check("the DM text has the title and summary, and the long form has every heading",
   dataSharingDmText().includes(DATA_SHARING_COPY.summary) && DATA_SHARING_COPY.details.every((d) => dataSharingDmText({ withDetails: true }).includes(d.heading)));
 
+// ---- the copy the page ships as a fallback must be the same wording the server sends
+{
+  const pageHtml = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "public", "miniapp", "index.html"), "utf8");
+  const m = pageHtml.match(/BEGIN SHARING_COPY_FALLBACK[^\n]*\n\s*const SHARING_COPY_FALLBACK = ([\s\S]*?);\n\s*\/\/ END SHARING_COPY_FALLBACK/);
+  let same = false;
+  try { same = !!m && JSON.stringify(JSON.parse(m[1])) === JSON.stringify(DATA_SHARING_COPY); } catch { /* stays false */ }
+  check("the page's built-in fallback wording is identical to DATA_SHARING_COPY (if not: node scripts/sync-sharing-copy.mjs)", same);
+}
+
 // ---- end to end with a pretend network: who is called, with and without a yes
 const here = path.dirname(fileURLToPath(import.meta.url));
 const probe = path.join(here, "_probe_sharing.mjs");
@@ -139,8 +148,10 @@ try {
   check("a photo without a yes goes only to the private vision model (Cloudflare)", !reachedShared(imgOff) && imgOff.calls.some((h) => /cloudflare/.test(h)), JSON.stringify(imgOff.calls));
   const imgOn = run("vision", true);
   check("a photo WITH a yes goes to Gemini first", imgOn.calls[0].includes("generativelanguage") && imgOn.text === "gemini answer", JSON.stringify(imgOn));
-  const imgOffDown = run("vision", false, { FAIL: "cloudflare.com" });
-  check("a photo, no yes, private vision down: nothing shared is called and the message points at Extended models", !reachedShared(imgOffDown) && /Extended models/.test(imgOffDown.text), JSON.stringify(imgOffDown));
+  const imgCfDown = run("vision", false, { FAIL: "cloudflare.com" });
+  check("a photo, no yes, Cloudflare down: the private Mistral reader answers instead, and nothing shared is called", !reachedShared(imgCfDown) && imgCfDown.calls.includes("api.mistral.ai") && imgCfDown.text === "private answer", JSON.stringify(imgCfDown));
+  const imgOffDown = run("vision", false, { FAIL: "cloudflare.com,mistral.ai" });
+  check("a photo, no yes, BOTH private readers down: nothing shared is called and the message points at Extended models", !reachedShared(imgOffDown) && /Extended models/.test(imgOffDown.text), JSON.stringify(imgOffDown));
   const pdfOff = run("pdf", false);
   check("a PDF without a yes never reaches a shared provider", !reachedShared(pdfOff), JSON.stringify(pdfOff.calls));
 

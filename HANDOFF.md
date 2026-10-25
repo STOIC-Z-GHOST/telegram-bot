@@ -326,3 +326,32 @@ Tests: `tests/budgets.test.mjs` (19 checks incl. wiring guards), health tests fo
   Two third-party guides say the free API needs an Alibaba Cloud account bound AND real-name verified (error text: "401 please bind your alibaba cloud account before use"; phone verification is real friction
   for international users). `/health` now translates that message and offers the way out (unset `MODELSCOPE_API_KEY`). It is the 5th image fallback (after Gemini, Cloudflare Gemma, OpenRouter Gemma, Z.ai) — recommended: skip it.
 
+
+
+## Oct 2026 (second half) — Extended models, early access, storage, readers
+
+All of this is merged into this project and tested together (`tests/`: 18 files). Details and the deploy order: `CHANGES-EXTENDED-MODELS.md`;
+how each feature works: `README.md` (Extended models, Early access, Storage).
+
+- **Extended models (privacy).** Each person chooses whether their chats may go to providers that can keep/train on them (Gemini, OpenRouter,
+  Z.ai, anything unclassified). Nothing pre-selected; unanswered = no. One wording in `lib/dataUse.js` (`DATA_SHARING_COPY`), copied into the page
+  by `node scripts/sync-sharing-copy.mjs` (a test fails if they differ). Every code path (text, photos, PDFs, voice, search, image prompts, file
+  creation) gates on `allowShared`; a caller that forgets it is treated as private. Providers never named to users.
+- **Early access.** `EARLY_ACCESS_SLOTS` / `_PLAN` / `_ENDS` (`lib/earlyAccess.js`, table `early_access`, owner command `/early`). Every plan lookup goes through
+  `getEffectiveTier` / `getEffectiveSubscriptionInfo`; `create-invoice.js` deliberately still uses the real paid tier.
+- **Storage.** `lib/storage.js`: per-plan quota (`TIER_LIMITS.*.storageBytes`), Settings -> Storage screen (api/miniapp/settings.js `?section=storage`,
+  POST `storageDelete`), uploads deleted after 7 days, bot-made files after 30, anything over 50 MB after 3 (env-tunable), daily Vercel Cron
+  (`vercel.json` -> `/api/telegram-webhook?task=cleanup`, needs `CRON_SECRET`; inside the webhook so the project stays at 12 functions). Quota is
+  checked in the file picker, in `blob-upload.js` (before any bytes are sent) and in `messages.js`; refused uploads are cleaned up.
+- **Readers.** `.docx`: `lib/docxText.js` rebuilds Word's automatic list numbers (exam questions were reaching the AI unnumbered, so "from question 25"
+  failed). PDFs: `lib/pdfText.js` reads a PDF's own text on the server (dependency `unpdf`); only scans go to Mistral OCR. Voice: silence filter and
+  format sniffing in `lib/transcribe.js`. Spreadsheets: phantom-row cutoff. Photos: second private reader (Mistral, `MISTRAL_VISION_MODEL`).
+- **Capacity reminder** (Hobby plan). Groq free is 200,000 tokens/day per model (about 300 chat replies a day on gpt-oss-120b, not the 1,000
+  requests/day that `/limits` shows), Mistral's ~$8.50 monthly credit carries most of the overflow, Cloudflare 9,000 neurons/day is shared with
+  photos and images, Vercel Blob Hobby is 1 GB and 2,000 uploads a month for the whole bot. Roughly 150 users who use their whole allowance, or
+  about 1,000 at two messages a day, before something runs out.
+- **Still open / owner's call:** run the two migrations (v16, v17) and set `CRON_SECRET` before deploying; decide `EARLY_ACCESS_SLOTS`; test with a brand-new
+  account that has Extended models off (PDF, scan, photo, voice note, the exam .docx); `/health live` should show the Mistral photo row (if the
+  model rejects images set `MISTRAL_VISION_MODEL=ministral-14b-2512`); the privacy policy draft (`PRIVACY-POLICY-DRAFT.md`) needs a lawyer;
+  decide on linking Google billing (then remove `gemini` from `SHARED_DATA_PROVIDERS`); Vercel Hobby is non-commercial, so move to Pro when charging;
+  HEIC photos sent as files are passed on unconverted. `.env.local` was inside the uploaded zip: keep it out of anything you share.

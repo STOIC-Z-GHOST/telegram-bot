@@ -12,5 +12,11 @@
     "api/miniapp/transcribe.js": {
       "maxDuration": 60
     }
-  }
+  },
+  "crons": [
+    {
+      "path": "/api/telegram-webhook?task=cleanup",
+      "schedule": "0 3 * * *"
+    }
+  ]
 }

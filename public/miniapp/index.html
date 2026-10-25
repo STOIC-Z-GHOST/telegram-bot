@@ -1202,6 +1202,25 @@
   .shared-details h4 { margin: 12px 0 2px; font-size: 13px; font-weight: 600; }
   .shared-details h4:first-child { margin-top: 0; }
   .shared-details p { margin: 0; font-size: 12.5px; line-height: 1.45; color: var(--hint); }
+  /* Storage: Settings row + the bottom sheet where people see and delete their own files */
+  .storage-bar { height: 6px; border-radius: 999px; background: var(--secondary-bg); margin-top: 8px; overflow: hidden; }
+  .storage-bar-fill { height: 100%; width: 0; border-radius: 999px; background: var(--link); transition: width 0.25s; }
+  .storage-bar-fill.warn { background: #e69a00; }
+  .storage-bar-fill.full { background: #d93025; }
+  .storage-open-btn { padding: 8px 14px; border-radius: 10px; border: 1px solid var(--section-separator); background: var(--secondary-bg); color: var(--text); font: inherit; font-size: 13.5px; font-weight: 600; cursor: pointer; }
+  .storage-open-btn:disabled { opacity: 0.5; }
+  .storage-toolbar { display: flex; align-items: center; justify-content: space-between; margin: 12px 0 4px; }
+  .storage-list { max-height: 42vh; overflow-y: auto; -webkit-overflow-scrolling: touch; }
+  .storage-item { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--section-separator); cursor: pointer; }
+  .storage-item input { width: 20px; height: 20px; flex: none; }
+  .storage-thumb { width: 40px; height: 40px; border-radius: 8px; flex: none; background: var(--secondary-bg); display: flex; align-items: center; justify-content: center; font-size: 20px; overflow: hidden; }
+  .storage-thumb img { width: 100%; height: 100%; object-fit: cover; }
+  .storage-item-text { min-width: 0; flex: 1; }
+  .storage-item-name { font-size: 14px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .storage-item-meta { font-size: 12px; color: var(--hint); margin-top: 1px; }
+  .storage-empty, .storage-note { font-size: 12.5px; color: var(--hint); line-height: 1.45; margin-top: 10px; }
+  .storage-delete-btn:not(:disabled) { background: #d93025; border-color: #d93025; color: #fff; }
+  .bubble-attachment-file.removed { opacity: 0.6; font-style: italic; }
   .consent-actions { display: flex; flex-direction: column; gap: 10px; margin-top: 16px; }
   .consent-btn { padding: 13px; border-radius: 12px; font: inherit; font-size: 15px; font-weight: 600; cursor: pointer; background: var(--secondary-bg); color: var(--text); border: 1px solid var(--section-separator); }
   .consent-btn:disabled { opacity: 0.6; }
@@ -1453,6 +1472,7 @@
             <div class="settings-label"><span id="shared-title">Extended models</span><span class="shared-chip" id="shared-chip">More models</span></div>
             <div class="settings-hint" id="shared-summary">You get more models when this is on. Some run on free services from other companies, which may keep your chats and use them to improve their AI.</div>
             <button type="button" class="shared-details-btn" id="shared-details-btn" aria-expanded="false" aria-controls="shared-details">Details</button>
+            <div class="settings-hint" id="shared-error" hidden>Couldn't load this setting. Close Settings and open it again to retry.</div>
           </div>
           <label class="switch">
             <input type="checkbox" id="shared-toggle" aria-label="Extended models" />
@@ -1460,6 +1480,16 @@
           </label>
         </div>
         <div class="shared-details" id="shared-details" hidden></div>
+      </div>
+      <div class="settings-section" id="storage-section">
+        <div class="settings-row">
+          <div>
+            <div class="settings-label">Storage</div>
+            <div class="settings-hint" id="storage-summary">Photos and files you send, and things the bot made for you.</div>
+            <div class="storage-bar"><div class="storage-bar-fill" id="storage-bar-fill"></div></div>
+          </div>
+          <button type="button" class="storage-open-btn" id="storage-open-btn" disabled>Manage</button>
+        </div>
       </div>
       <div class="settings-section">
         <div class="settings-row" style="margin-bottom: 8px;">
@@ -1592,6 +1622,26 @@
     <button type="button" class="consent-btn" id="consent-deny-btn">Keep my chats private</button>
   </div>
   <div class="consent-error" id="consent-error" hidden>Couldn't save that — check your connection and try again.</div>
+</div>
+
+<div id="storage-overlay" class="tier-sheet-overlay" hidden></div>
+<div id="storage-sheet" class="tier-sheet" role="dialog" aria-modal="true" aria-label="Storage">
+  <div class="tier-sheet-handle"></div>
+  <h2 class="tier-sheet-title">Storage</h2>
+  <p class="tier-sheet-subtitle" id="storage-sheet-summary"></p>
+  <div class="storage-bar"><div class="storage-bar-fill" id="storage-sheet-fill"></div></div>
+  <div class="storage-toolbar">
+    <button type="button" class="shared-details-btn" id="storage-select-all" style="padding-top:0;">Select all</button>
+    <span class="settings-hint" id="storage-selected-count" style="margin-top:0;"></span>
+  </div>
+  <div class="storage-list" id="storage-list"></div>
+  <div class="storage-empty" id="storage-empty" hidden>Nothing stored. Photos and files you send, and things the bot makes for you, will show up here.</div>
+  <div class="storage-note" id="storage-note"></div>
+  <div class="consent-actions">
+    <button type="button" class="consent-btn storage-delete-btn" id="storage-delete-btn" disabled>Delete selected</button>
+    <button type="button" class="consent-btn" id="storage-close-btn">Done</button>
+  </div>
+  <div class="consent-error" id="storage-error" hidden></div>
 </div>
 
 <div id="lightbox" class="lightbox" hidden>
@@ -2103,13 +2153,16 @@
     const paidPlan = trial.paid ? currentUserPlan : null;
     const rank = (p) => TIER_PLAN_RANK[p] ?? 0;
 
+    const early = !!usageState?.earlyAccess && !paidPlan; // early access fills in for a plan they don't pay for
     planSheetSubtitleEl.textContent = active
       ? `${planLabel(active.plan)} trial — ${daysWord(active.daysLeft)} left (ends ${fmtShortDate(active.expiresAt)})`
       : paidPlan
         ? `You're on ${planLabel(paidPlan)}.`
-        : "You're on Free.";
+        : early
+          ? `You're on ${planLabel(usageState.tier)} through early access — thank you for being one of the first. Subscribe below to keep these limits when early access ends.`
+          : "You're on Free.";
 
-    const freeCurrent = !active && !paidPlan;
+    const freeCurrent = !active && !paidPlan && !early;
     const cards = [`
       <div class="plan-card${freeCurrent ? " current" : ""}">
         <div class="plan-card-head"><span class="plan-card-name">Free</span><span class="plan-card-status">${freeCurrent ? "Your plan" : ""}</span></div>
@@ -2120,7 +2173,7 @@
       const offer = trial.offers[plan];
       const isTrialling = active && active.plan === plan;
       const isPaid = paidPlan === plan;
-      const status = isTrialling ? `Trial · ${daysWord(active.daysLeft)} left` : isPaid ? "Your plan" : "";
+      const status = isTrialling ? `Trial · ${daysWord(active.daysLeft)} left` : isPaid ? "Your plan" : early && usageState.tier === plan ? "Early access" : "";
       const desc = plan === "pro"
         ? "Max model, Excel / PowerPoint / code files, longer voice notes, more images and search."
         : "Everything in Pro, plus the Extra model and the highest limits.";
@@ -2379,12 +2432,14 @@
   // --- Memory toggle (server-side — it affects how new chats are
   // answered, so it has to live on the backend, not just this device) ---
   async function loadSettings() {
+    loadStorage(); // its own request, so a problem with one never hides the other
     try {
       const settings = await apiFetch("/api/miniapp/settings");
       memoryToggle.checked = !!settings.memoryEnabled;
       applySharing(settings);
     } catch {
-      // Leave it as-is rather than blocking the settings screen over this.
+      // Leave it as-is rather than blocking the settings screen over this — but never leave the Extended models switch looking usable.
+      setSharingLoadFailed(true);
     }
   }
 
@@ -2400,6 +2455,154 @@
       memoryToggle.checked = !desired; // revert on failure
     } finally {
       memoryToggle.disabled = false;
+    }
+  });
+
+  // --- Storage: see what you've kept and delete what you don't want (lib/storage.js, api/miniapp/settings.js) ---
+  const storageSummaryEl = document.getElementById("storage-summary");
+  const storageBarFill = document.getElementById("storage-bar-fill");
+  const storageOpenBtn = document.getElementById("storage-open-btn");
+  const storageOverlay = document.getElementById("storage-overlay");
+  const storageSheet = document.getElementById("storage-sheet");
+  const storageSheetSummary = document.getElementById("storage-sheet-summary");
+  const storageSheetFill = document.getElementById("storage-sheet-fill");
+  const storageListEl = document.getElementById("storage-list");
+  const storageEmptyEl = document.getElementById("storage-empty");
+  const storageNoteEl = document.getElementById("storage-note");
+  const storageSelectAllBtn = document.getElementById("storage-select-all");
+  const storageSelectedCount = document.getElementById("storage-selected-count");
+  const storageDeleteBtn = document.getElementById("storage-delete-btn");
+  const storageCloseBtn = document.getElementById("storage-close-btn");
+  const storageErrorEl = document.getElementById("storage-error");
+  let storageData = null;
+  const storageSelected = new Set();
+
+  function formatStorageSize(bytes) {
+    const n = Number(bytes) || 0;
+    if (n >= 1024 * 1024) { const mb = n / (1024 * 1024); return `${mb >= 10 ? Math.round(mb) : Math.round(mb * 10) / 10} MB`; }
+    if (n >= 1024) return `${Math.round(n / 1024)} KB`;
+    return n > 0 ? `${n} B` : "0 KB";
+  }
+  function storageUsageText(d) {
+    return d.quotaBytes ? `${formatStorageSize(d.usedBytes)} of ${formatStorageSize(d.quotaBytes)} used` : `${formatStorageSize(d.usedBytes)} used`;
+  }
+  function setStorageBar(el, d) {
+    const pct = d.quotaBytes ? Math.min(100, Math.round((d.usedBytes / d.quotaBytes) * 100)) : 0;
+    el.style.width = `${pct}%`;
+    el.classList.toggle("warn", pct >= 80 && pct < 100);
+    el.classList.toggle("full", pct >= 100);
+  }
+  function applyStorage(d) {
+    storageData = d;
+    if (usageState) usageState.storage = { usedBytes: d.usedBytes, quotaBytes: d.quotaBytes }; // the file picker's "will it fit" check uses this
+    const text = storageUsageText(d);
+    storageSummaryEl.textContent = d.quotaBytes && d.usedBytes >= d.quotaBytes ? `${text} — full. Delete some files to add more.` : text;
+    setStorageBar(storageBarFill, d);
+    storageOpenBtn.disabled = false;
+  }
+  async function loadStorage() {
+    try {
+      applyStorage(await apiFetch("/api/miniapp/settings?section=storage"));
+    } catch {
+      storageSummaryEl.textContent = "Couldn't load your storage. Close Settings and open it again to retry.";
+      storageOpenBtn.disabled = true;
+    }
+  }
+  function storageWhen(f) {
+    if (f.daysLeft <= 0) return "deletes today";
+    return f.daysLeft === 1 ? "deletes tomorrow" : `deletes in ${f.daysLeft} days`;
+  }
+  function renderStorageList() {
+    const files = storageData?.files || [];
+    storageListEl.textContent = "";
+    storageEmptyEl.hidden = files.length > 0;
+    for (const f of files) {
+      const row = document.createElement("label");
+      row.className = "storage-item";
+      const box = document.createElement("input");
+      box.type = "checkbox";
+      box.checked = storageSelected.has(f.url);
+      box.addEventListener("change", () => { if (box.checked) storageSelected.add(f.url); else storageSelected.delete(f.url); updateStorageSelection(); });
+      const thumb = document.createElement("div");
+      thumb.className = "storage-thumb";
+      if ((f.type || "").startsWith("image/")) {
+        const img = document.createElement("img");
+        img.src = f.url; img.alt = ""; img.loading = "lazy";
+        thumb.appendChild(img);
+      } else {
+        thumb.textContent = "📄";
+      }
+      const text = document.createElement("div");
+      text.className = "storage-item-text";
+      const name = document.createElement("div");
+      name.className = "storage-item-name";
+      name.textContent = f.name;
+      const meta = document.createElement("div");
+      meta.className = "storage-item-meta";
+      meta.textContent = `${formatStorageSize(f.bytes)} · ${f.source === "generated" ? "made by the bot" : "you sent"} · ${storageWhen(f)}`;
+      text.append(name, meta);
+      row.append(box, thumb, text);
+      storageListEl.appendChild(row);
+    }
+    updateStorageSelection();
+  }
+  function updateStorageSelection() {
+    const files = storageData?.files || [];
+    const n = storageSelected.size;
+    storageSelectedCount.textContent = n ? `${n} selected` : "";
+    storageDeleteBtn.disabled = n === 0;
+    storageDeleteBtn.textContent = n ? `Delete ${n} file${n === 1 ? "" : "s"}` : "Delete selected";
+    storageSelectAllBtn.textContent = files.length > 0 && n === files.length ? "Select none" : "Select all";
+    storageSelectAllBtn.hidden = files.length === 0;
+  }
+  function openStorageSheet() {
+    storageSelected.clear();
+    storageErrorEl.hidden = true;
+    storageSheetSummary.textContent = storageUsageText(storageData);
+    setStorageBar(storageSheetFill, storageData);
+    storageNoteEl.textContent = `Photos and files you send are deleted after ${storageData.uploadDays} days, and things the bot makes for you after ${storageData.generatedDays} days. Files over ${storageData.largeMB} MB are deleted after ${storageData.largeDays} days. The chat stays; the file shows as removed. You can delete files here any time.`;
+    renderStorageList();
+    storageOverlay.hidden = false;
+    requestAnimationFrame(() => { storageOverlay.classList.add("visible"); storageSheet.classList.add("open"); });
+  }
+  function closeStorageSheet() {
+    storageOverlay.classList.remove("visible");
+    storageSheet.classList.remove("open");
+    setTimeout(() => { storageOverlay.hidden = true; }, 250);
+  }
+  function confirmStorageDelete(n) {
+    const msg = `Delete ${n} file${n === 1 ? "" : "s"}? This can't be undone. Your chats stay, but these files will show as removed.`;
+    return new Promise((resolve) => {
+      if (tg && typeof tg.showConfirm === "function") tg.showConfirm(msg, (ok) => resolve(!!ok));
+      else resolve(window.confirm(msg));
+    });
+  }
+  storageOpenBtn.addEventListener("click", () => { if (storageData) openStorageSheet(); });
+  storageCloseBtn.addEventListener("click", closeStorageSheet);
+  storageOverlay.addEventListener("click", closeStorageSheet);
+  storageSelectAllBtn.addEventListener("click", () => {
+    const files = storageData?.files || [];
+    if (storageSelected.size === files.length) storageSelected.clear(); else files.forEach((f) => storageSelected.add(f.url));
+    renderStorageList();
+  });
+  storageDeleteBtn.addEventListener("click", async () => {
+    const urls = [...storageSelected];
+    if (urls.length === 0) return;
+    if (!(await confirmStorageDelete(urls.length))) return;
+    storageDeleteBtn.disabled = true;
+    storageErrorEl.hidden = true;
+    try {
+      const result = await apiFetch("/api/miniapp/settings", { method: "POST", body: JSON.stringify({ storageDelete: { urls } }) });
+      storageSelected.clear();
+      applyStorage(result.storage);
+      storageSheetSummary.textContent = storageUsageText(storageData);
+      setStorageBar(storageSheetFill, storageData);
+      renderStorageList();
+      if (result.failed > 0) { storageErrorEl.textContent = `${result.failed} file${result.failed === 1 ? "" : "s"} couldn't be deleted just now. Try again in a moment.`; storageErrorEl.hidden = false; }
+    } catch (err) {
+      storageErrorEl.textContent = "Couldn't delete those — check your connection and try again.";
+      storageErrorEl.hidden = false;
+      updateStorageSelection();
     }
   });
 
@@ -2422,6 +2625,52 @@
   const consentAllowBtn = document.getElementById("consent-allow-btn");
   const consentDenyBtn = document.getElementById("consent-deny-btn");
   const consentErrorEl = document.getElementById("consent-error");
+  // The page ships its own copy of the Extended-models wording (generated from lib/dataUse.js by scripts/sync-sharing-copy.mjs) so
+  // the Details button always has something to show, even before the server answers or if it can't be reached. The server's copy
+  // replaces it as soon as it arrives; tests/dataSharing.test.mjs fails if the two ever differ.
+  // BEGIN SHARING_COPY_FALLBACK (generated — do not edit by hand)
+  const SHARING_COPY_FALLBACK = {
+    "title": "Extended models",
+    "badge": "More models",
+    "summary": "You get more models when this is on. Some run on free services from other companies, which may keep your chats and use them to improve their AI.",
+    "detailsButton": "Details",
+    "hideDetailsButton": "Hide details",
+    "details": [
+      {
+        "heading": "What you get when it's on",
+        "text": "Extra models: Premium's Extra tier, a backup when the main models are busy, and a stronger model for reading photos and PDFs. Answers can be better and you'll hit \"busy\" less often."
+      },
+      {
+        "heading": "What it means for your chats",
+        "text": "The extra models run on free services from other companies. Those companies may keep your messages and the replies, use them to improve their own AI, and in some cases let their staff read them. We can't control that."
+      },
+      {
+        "heading": "When it's off",
+        "text": "Your chats only go to models whose providers say they don't train on your data. You keep Flash, Standard and Max. You lose Extra, photos and documents are read by a simpler method, and replies can be slower when things are busy."
+      },
+      {
+        "heading": "Never share sensitive information",
+        "text": "Don't send passwords, ID or bank details, health records, or other people's private details, whether this is on or off. Even private providers may keep requests briefly to check for abuse."
+      },
+      {
+        "heading": "Photos, files and voice",
+        "text": "They follow the same switch. When it's off they only go to the private models."
+      },
+      {
+        "heading": "You're in control",
+        "text": "Change it any time in Settings. It applies to messages you send after you change it; it can't take back what was already sent. Extended models is for people 18 and over."
+      }
+    ],
+    "allowButton": "Turn on Extended models",
+    "denyButton": "Keep my chats private"
+  };
+  // END SHARING_COPY_FALLBACK
+  const sharedErrorEl = document.getElementById("shared-error");
+  // When the setting can't be read the switch is locked (so it never shows a choice that wasn't loaded or saved) and says why.
+  function setSharingLoadFailed(failed) {
+    sharedErrorEl.hidden = !failed;
+    sharedToggle.disabled = failed;
+  }
   let sharingCopy = null;
 
   function fillSharingDetails(container) {
@@ -2455,10 +2704,11 @@
       setSharingDetailsOpen(sharedDetailsBtn, sharedDetailsEl, !sharedDetailsEl.hidden);
       setSharingDetailsOpen(consentDetailsBtn, consentDetailsEl, !consentDetailsEl.hidden);
     }
-    sharedToggle.checked = !!settings?.dataSharing?.allow;
+    if (settings?.dataSharing) { sharedToggle.checked = !!settings.dataSharing.allow; setSharingLoadFailed(false); }
   }
   sharedDetailsBtn.addEventListener("click", () => setSharingDetailsOpen(sharedDetailsBtn, sharedDetailsEl, sharedDetailsEl.hidden));
   consentDetailsBtn.addEventListener("click", () => setSharingDetailsOpen(consentDetailsBtn, consentDetailsEl, consentDetailsEl.hidden));
+  applySharing({ dataSharingCopy: SHARING_COPY_FALLBACK }); // Details works from the first paint; the server's copy replaces it
 
   sharedToggle.addEventListener("change", async () => {
     const desired = sharedToggle.checked;
@@ -2512,6 +2762,7 @@
       if (settings.dataSharing?.needsAnswer) openConsentSheet();
     } catch {
       // If it can't be read nothing is shared (the server fails closed), and the app must not be blocked over it.
+      setSharingLoadFailed(true);
     }
   }
 
@@ -2672,7 +2923,7 @@
 
       upgradeSectionEl.hidden = false;
       const tierLabel = data.tier.charAt(0).toUpperCase() + data.tier.slice(1);
-      const trialSuffix = data.trial ? ` (trial, ${daysWord(data.trial.daysLeft)} left)` : "";
+      const trialSuffix = data.trial ? ` (trial, ${daysWord(data.trial.daysLeft)} left)` : data.earlyAccess ? " (early access)" : "";
       currentTierLabelEl.textContent =
         `Current plan: ${tierLabel}${trialSuffix} · ${data.imagesLast30Days}/${data.imageGenPerMonth} image generations this month`;
       // Keyed to what they PAY for, so someone only trialling still sees Subscribe.
@@ -2687,6 +2938,9 @@
           trialReminderShown = true;
           showNotice(`Your ${tierLabel} trial ends in ${daysWord(data.trial.daysLeft)} (${fmtShortDate(data.trial.expiresAt)}). Open Plan in the menu to subscribe and keep it.`);
         }
+      } else if (data.earlyAccess) {
+        planMenuBadgeEl.textContent = "Early access";
+        planMenuBadgeEl.hidden = false;
       } else if (data.tier !== "free") {
         planMenuBadgeEl.textContent = tierLabel;
         planMenuBadgeEl.hidden = false;
@@ -2753,6 +3007,7 @@
           <tr><td>Msgs</td><td>${free.messagesPerDay}/day</td><td>${pro.messagesPerHour}/hr</td><td>Unlimited</td></tr>
           <tr><td>Tokens/mo</td><td>${tok(free.maxTokens)}</td><td>${tok(pro.maxTokens)}</td><td>${tok(premium.maxTokens)}</td></tr>
           <tr><td>Files</td><td>${mb(free.maxFileBytes)}</td><td>${mb(pro.maxFileBytes)}</td><td>${mb(premium.maxFileBytes)}</td></tr>
+          <tr><td>Storage</td><td>${free.storageBytes ? mb(free.storageBytes) : "—"}</td><td>${pro.storageBytes ? mb(pro.storageBytes) : "—"}</td><td>${premium.storageBytes ? mb(premium.storageBytes) : "—"}</td></tr>
           <tr><td>Imgs/msg</td><td>${free.maxImagesPerMessage}</td><td>${pro.maxImagesPerMessage}</td><td>${premium.maxImagesPerMessage}</td></tr>
           <tr><td>Images/mo</td><td>${free.imageGenPerMonth}</td><td>${pro.imageGenPerMonth}</td><td>Unlimited</td></tr>
           <tr><td>Voice/day</td><td>${voiceMinutes(free)}</td><td>${voiceMinutes(pro)}</td><td>${voiceMinutes(premium)}</td></tr>
@@ -3168,7 +3423,13 @@
       }
       const chip = document.createElement("div");
       chip.className = "bubble-attachment-file";
-      chip.textContent = `📎 ${a.name || "file"}`;
+      if (a.removed) {
+        // Deleted from Settings → Storage, or past its retention: the message stays, the file is gone.
+        chip.classList.add("removed");
+        chip.textContent = `🗑️ ${a.name || "file"} — removed`;
+      } else {
+        chip.textContent = `📎 ${a.name || "file"}`;
+      }
       body.appendChild(chip);
     }
 
@@ -3388,6 +3649,22 @@
       return;
     }
 
+    // Storage: tell them now, before anything uploads, if the files won't fit in what's left of their space. The server checks again
+    // (the upload gate and the send both do); this is only so the answer is instant and kind.
+    const st = usageState?.storage;
+    if (st && st.quotaBytes) {
+      const adding = files.reduce((n, f) => n + f.size, 0);
+      const left = Math.max(0, st.quotaBytes - st.usedBytes);
+      if (left <= 0 || adding > left) {
+        const msg = left <= 0
+          ? "Your storage is full. Delete some files in Settings → Storage, then try again."
+          : `That's more than the ${formatStorageSize(left)} of storage you have left. Delete some files in Settings → Storage, or send a smaller one.`;
+        tg?.showAlert?.(msg) ?? alert(msg);
+        fileInputEl.value = "";
+        return;
+      }
+    }
+
     // Excel/PowerPoint/code-and-data files are Pro+. The server enforces
     // this for real — this just tells a free user before they wait on an upload.
     if (!canUseProFiles) {
@@ -3556,7 +3833,19 @@
     const id = (globalThis.crypto && typeof globalThis.crypto.randomUUID === "function")
       ? globalThis.crypto.randomUUID()
       : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
-    const clean = String(fileName || "file").replace(/[\\/:*?"<>|\u0000-\u001f]+/g, "_").replace(/^\.+/, "").slice(0, 120) || "file";
+    let clean = String(fileName || "file").replace(/[\\/:*?"<>|\u0000-\u001f]+/g, "_").replace(/^\.+/, "").slice(0, 120) || "file";
+    // The storage address percent-encodes every non-ASCII letter (an Amharic letter becomes 9 characters), and the server only accepts
+    // addresses up to a fixed length. So shorten by ENCODED length, cutting the name but never the ending (".docx" decides what the file is).
+    const MAX_ENCODED_NAME = 240;
+    if (encodeURIComponent(clean).length > MAX_ENCODED_NAME) {
+      const dot = clean.lastIndexOf(".");
+      const ext = dot > 0 && clean.length - dot <= 10 ? clean.slice(dot) : "";
+      let base = ext ? clean.slice(0, dot) : clean;
+      const chars = Array.from(base); // whole characters, never half of one
+      while (chars.length > 1 && encodeURIComponent(chars.join("") + ext).length > MAX_ENCODED_NAME) chars.pop();
+      base = chars.join("");
+      clean = base + ext;
+    }
     return `${id}/${clean}`;
   }
 

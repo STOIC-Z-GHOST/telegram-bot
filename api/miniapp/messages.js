@@ -66,7 +66,8 @@ import { fetchOwnBlob, sanitizeAttachments, AttachmentFetchError } from "../../l
 
 const MAX_MESSAGE_CHARS = 30000; // roughly 8,000 tokens — plenty for pasted code or an essay
 import { isMemoryEnabled, listMemories, saveMemory, extractMemoryMarker, MEMORY_LIMIT } from "../../lib/memory.js";
-import { getUserTier } from "../../lib/subscriptions.js";
+import { getEffectiveTier as getUserTier } from "../../lib/earlyAccess.js"; // real plan, or the early-access plan if that is better
+import { checkStorageQuota, verifiedAttachments, discardUnreferencedBlobs } from "../../lib/storage.js";
 import {
   checkMessageLimit,
   recordMessageUsage,
@@ -129,6 +130,8 @@ async function generateAndSaveFile(res, chat, userId, fileRequest, produce = nul
   let tokensUsed = null;
 
   try {
+    const room = await checkStorageQuota(userId, 0);
+    if (!room.allowed) throw new FileGenError(room.reason, { retryable: false });
     let out;
     if (produce) {
       out = await produce(); // editing an uploaded file (see editAndSaveFile)
@@ -233,7 +236,7 @@ async function editAndSaveFile(res, chat, userId, editRequest) {
 // the assistant's message. Responds on res itself and returns nothing —
 // callers just call it and return.
 // allowShared: true only for someone who turned Extended models on — only then may the prompt go to an image service that is not
-// private (lib/imagegen.js must honour opts.allowShared; see PATCH-imagegen.md).
+// private (lib/imagegen.js honours opts.allowShared: without it only Cloudflare is used).
 async function generateAndSaveImage(res, chat, userId, prompt, allowShared = false) {
   const imageLimitCheck = await checkImageGenLimit(userId);
   if (!imageLimitCheck.allowed) {
@@ -244,16 +247,23 @@ async function generateAndSaveImage(res, chat, userId, prompt, allowShared = fal
   let assistantContent;
   let attachment = null;
   try {
+    // Nothing is generated (and no allowance spent) for someone whose storage is already full.
+    const room = await checkStorageQuota(userId, 0);
+    if (!room.allowed) throw Object.assign(new Error(room.reason), { storageFull: true });
     const { buffer, mimeType } = await generateImage(prompt, { allowShared });
     const blob = await put(`generated-images/${chat.id}-${Date.now()}.jpg`, buffer, {
       access: "public",
       contentType: mimeType,
     });
     assistantContent = `Generated: ${prompt}`;
-    attachment = { url: blob.url, name: `${prompt.slice(0, 40)}.jpg`, type: mimeType };
+    attachment = { url: blob.url, name: `${prompt.slice(0, 40)}.jpg`, type: mimeType, bytes: buffer.length };
   } catch (err) {
-    console.error("Image generation failed:", err.message);
-    assistantContent = `⚠️ ${friendlyImageError(err)}`;
+    if (err.storageFull) {
+      assistantContent = `⚠️ ${err.message}`;
+    } else {
+      console.error("Image generation failed:", err.message);
+      assistantContent = `⚠️ ${friendlyImageError(err)}`;
+    }
   }
 
   await recordMessageUsage(userId, null); // still counts toward messages/hour, no tokens involved
@@ -311,16 +321,22 @@ export default async function handler(req, res) {
       res.status(400).json({ error: "bad_attachments", message: "Those attachments couldn't be read — please upload them again." });
       return;
     }
-    const attachments = cleaned.attachments;
+    let attachments = cleaned.attachments;
     const hasAttachment = attachments.length > 0;
+    // A refused message leaves the files it came with behind in storage (the browser uploads first). They count against the
+    // storage plan and nobody can see them, so remove the ones no message points at (never anyone else's — see lib/storage.js).
+    const refuse = async (status, body) => {
+      if (hasAttachment) await discardUnreferencedBlobs(attachments.map((a) => a.url));
+      res.status(status).json(body);
+    };
     // A message is text, and not a book: without a cap one request could push megabytes
     // of text at the model (the 4.5MB body limit is the only other ceiling).
     if (content !== undefined && content !== null && typeof content !== "string") {
-      res.status(400).json({ error: "bad_request", message: "That message couldn't be read." });
+      await refuse(400, { error: "bad_request", message: "That message couldn't be read." });
       return;
     }
     if ((content || "").length > MAX_MESSAGE_CHARS) {
-      res.status(413).json({ error: "too_long", message: `That message is too long — please keep it under ${MAX_MESSAGE_CHARS.toLocaleString("en-US")} characters, or send it as a file.` });
+      await refuse(413, { error: "too_long", message: `That message is too long — please keep it under ${MAX_MESSAGE_CHARS.toLocaleString("en-US")} characters, or send it as a file.` });
       return;
     }
     const trimmedContent = (content || "").trim();
@@ -342,7 +358,7 @@ export default async function handler(req, res) {
     const wantsSearch = !!search && !hasAttachment && !wantsCodeReview;
 
     if (!chatId || (!trimmedContent && !hasAttachment)) {
-      res.status(400).json({ error: "chatId and content (or at least one attachment) are required" });
+      await refuse(400, { error: "chatId and content (or at least one attachment) are required" });
       return;
     }
 
@@ -353,18 +369,18 @@ export default async function handler(req, res) {
       checkMessageLimit(user.id),
     ]);
     if (!chat) {
-      res.status(404).json({ error: "Chat not found" });
+      await refuse(404, { error: "Chat not found" });
       return;
     }
     if (!limitCheck.allowed) {
-      res.status(429).json({ error: "rate_limited", message: limitCheck.reason });
+      await refuse(429, { error: "rate_limited", message: limitCheck.reason });
       return;
     }
 
     if (wantsThinking || wantsCodeReview) {
       const thinkingCheck = await checkThinkingLimit(user.id);
       if (!thinkingCheck.allowed) {
-        res.status(429).json({ error: "rate_limited", message: thinkingCheck.reason });
+        await refuse(429, { error: "rate_limited", message: thinkingCheck.reason });
         return;
       }
     }
@@ -372,7 +388,7 @@ export default async function handler(req, res) {
     if (wantsSearch) {
       const searchCheck = await checkSearchLimit(user.id);
       if (!searchCheck.allowed) {
-        res.status(429).json({ error: "rate_limited", message: searchCheck.reason });
+        await refuse(429, { error: "rate_limited", message: searchCheck.reason });
         return;
       }
     }
@@ -385,7 +401,7 @@ export default async function handler(req, res) {
       if (allImages) {
         const countCheck = await checkImageCountLimit(user.id, attachments.length);
         if (!countCheck.allowed) {
-          res.status(429).json({ error: "rate_limited", message: countCheck.reason });
+          await refuse(429, { error: "rate_limited", message: countCheck.reason });
           return;
         }
       }
@@ -395,13 +411,20 @@ export default async function handler(req, res) {
       for (const a of attachments) {
         const typeCheck = await checkFileTypeAllowed(user.id, a.name, a.type);
         if (!typeCheck.allowed) {
-          res.status(429).json({ error: "rate_limited", message: typeCheck.reason });
+          await refuse(429, { error: "rate_limited", message: typeCheck.reason });
           return;
         }
       }
       const chatLimitCheck = await checkChatAttachmentLimit(user.id, chat.id, attachments.length);
       if (!chatLimitCheck.allowed) {
-        res.status(429).json({ error: "rate_limited", message: chatLimitCheck.reason });
+        await refuse(429, { error: "rate_limited", message: chatLimitCheck.reason });
+        return;
+      }
+      // The browser's own file sizes can't be trusted, so read the real ones back from storage, then check this person's quota.
+      attachments = await verifiedAttachments(attachments);
+      const storageCheck = await checkStorageQuota(user.id, attachments.reduce((sum, a) => sum + (a.bytes || 0), 0));
+      if (!storageCheck.allowed) {
+        await refuse(413, { error: "storage_full", message: storageCheck.reason });
         return;
       }
     }
@@ -410,12 +433,12 @@ export default async function handler(req, res) {
     const isBareImageCommand = !hasAttachment && /^\/(image|img)$/i.test(trimmedContent);
 
     if (isBareImageCommand) {
-      res.status(400).json({ error: "bad_command", message: "Send it like: /image a red fox in a snowy forest" });
+      await refuse(400, { error: "bad_command", message: "Send it like: /image a red fox in a snowy forest" });
       return;
     }
 
     if (isBareReviewCommand) {
-      res.status(400).json({ error: "bad_command", message: "Send it like: /review <paste your code or describe what to review>" });
+      await refuse(400, { error: "bad_command", message: "Send it like: /review <paste your code or describe what to review>" });
       return;
     }
 

@@ -214,3 +214,10 @@ export const planPrices = pgTable("plan_prices", {
   priceStars: integer("price_stars").notNull(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });
+
+// People let in by early access (lib/earlyAccess.js): the first few users get a higher plan while EARLY_ACCESS_SLOTS is above 0.
+// The row only records that (and when) they got in; the plan they get always comes from EARLY_ACCESS_PLAN.
+export const earlyAccess = pgTable("early_access", {
+  telegramUserId: bigint("telegram_user_id", { mode: "number" }).primaryKey(),
+  grantedAt: timestamp("granted_at").notNull().defaultNow(),
+});

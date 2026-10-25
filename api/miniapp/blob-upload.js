@@ -21,8 +21,9 @@
 import { handleUpload } from "@vercel/blob/client";
 import { verifyTelegramInitData } from "../../lib/telegramAuth.js";
 import { isApproved, isOwner } from "../../lib/access.js";
-import { getUserTier } from "../../lib/subscriptions.js";
+import { getEffectiveTier as getUserTier } from "../../lib/earlyAccess.js"; // real plan, or the early-access plan if that is better
 import { TIER_LIMITS } from "../../lib/limits.js";
+import { checkStorageQuota } from "../../lib/storage.js";
 
 // Coarse first gate only — the authoritative per-plan check is by file
 // extension in messages.js (checkFileTypeAllowed), because browsers report
@@ -78,7 +79,14 @@ export default async function handler(req, res) {
           throw new Error("Not authorized");
         }
         const tier = await getUserTier(user.id);
-        const maxBytes = isOwner(user.id) ? 500 * 1024 * 1024 : TIER_LIMITS[tier].maxFileBytes;
+        let maxBytes = isOwner(user.id) ? 500 * 1024 * 1024 : TIER_LIMITS[tier].maxFileBytes;
+        if (!isOwner(user.id)) {
+          // Storage quota (lib/storage.js), checked BEFORE any bytes are uploaded: a full store is refused here, and a single file
+          // can never be bigger than the space left, so a refused upload doesn't leave a file behind in storage.
+          const room = await checkStorageQuota(user.id, 0, { quota: TIER_LIMITS[tier].storageBytes });
+          if (!room.allowed) throw new Error(room.reason);
+          if (room.quota) maxBytes = Math.min(maxBytes, Math.max(1, room.quota - room.used));
+        }
         return {
           allowedContentTypes: isOwner(user.id) || tier !== "free" ? PRO_CONTENT_TYPES : FREE_CONTENT_TYPES,
           maximumSizeInBytes: maxBytes,

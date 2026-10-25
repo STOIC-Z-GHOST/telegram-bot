@@ -19,7 +19,7 @@ const COPY = {
   allowButton: "Turn on Extended models", denyButton: "Keep my chats private",
 };
 
-async function boot({ needsAnswer, allow = false, failSave = false }) {
+async function boot({ needsAnswer, allow = false, failSave = false, failLoad = false }) {
   const html = fs.readFileSync(path.join(__dirname, "..", "public", "miniapp", "index.html"), "utf8");
   const m = html.match(/<script type="module">([\s\S]*?)<\/script>/);
   // The page imports a browser helper from a CDN; jsdom can't load modules, and this check doesn't upload anything.
@@ -41,6 +41,7 @@ async function boot({ needsAnswer, allow = false, failSave = false }) {
         if (failSave) return json({ error: "boom" }, 500);
         return json({ dataSharing: { allow: !!body.dataSharing, needsAnswer: false } });
       }
+      if (failLoad) return json({ error: "column data_sharing does not exist" }, 500); // e.g. the migration has not been run yet
       return json({ memoryEnabled: false, dataSharing: { allow, choice: allow, needsAnswer, version: 1 }, dataSharingCopy: COPY });
     }
     if (u.includes("/api/miniapp/chats")) return json({ chats: [] });
@@ -51,6 +52,8 @@ async function boot({ needsAnswer, allow = false, failSave = false }) {
   return { w, doc: w.document, posts };
 }
 const $ = (doc, id) => doc.getElementById(id);
+// What a person actually sees: the browser's computed display (so a CSS rule beating the hidden attribute would be caught), not just .hidden.
+const visible = (w, el) => !el.hidden && w.getComputedStyle(el).display !== "none";
 
 (async () => {
   // ---- someone who has never answered
@@ -108,6 +111,28 @@ const $ = (doc, id) => doc.getElementById(id);
     t.checked = true; t.dispatchEvent(new doc.defaultView.Event("change"));
     await wait(30);
     check("if saving the toggle fails it flips back (never shows ON when it isn't saved)", t.checked === false && t.disabled === false);
+  }
+
+  // ---- the server can't be read (e.g. the migration hasn't been run): Details must still work, the switch must be locked
+  {
+    const { w, doc, posts } = await boot({ needsAnswer: false, failLoad: true });
+    await wait(40);
+    const panel = $(doc, "shared-details"), btn = $(doc, "shared-details-btn");
+    check("server unreachable: the panel starts hidden, and the Details button is there", !visible(w, panel) && btn.textContent === "Details");
+    btn.click();
+    check("server unreachable: Details still opens, with the whole explanation, visibly", visible(w, panel) && /Never share sensitive information/.test(panel.textContent) && panel.textContent.length > 100 && btn.textContent === "Hide details", panel.textContent.slice(0, 60));
+    btn.click();
+    check("server unreachable: Details hides again, visibly", !visible(w, panel) && btn.textContent === "Details");
+    check("server unreachable: the switch is locked off and says why, and the first-run sheet does not open", $(doc, "shared-toggle").disabled === true && $(doc, "shared-toggle").checked === false && visible(w, $(doc, "shared-error")) && !$(doc, "consent-sheet").classList.contains("open"));
+    check("server unreachable: nothing was saved", posts.length === 0);
+  }
+  {
+    const { w, doc } = await boot({ needsAnswer: false, allow: false });
+    await wait(30);
+    const panel = $(doc, "shared-details"), btn = $(doc, "shared-details-btn");
+    btn.click();
+    check("normal load: Details is visible after a tap and hidden after a second tap (computed display, not just the attribute)", visible(w, panel) && (btn.click(), !visible(w, panel)));
+    check("normal load: the error line is hidden and the switch is usable", !visible(w, $(doc, "shared-error")) && $(doc, "shared-toggle").disabled === false);
   }
 
   console.log(`\n${pass} passed, ${fail} failed`);

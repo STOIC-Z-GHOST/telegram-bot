@@ -7,6 +7,8 @@
 import { requireTelegramUser } from "../../lib/telegramAuth.js";
 import { isOwner } from "../../lib/access.js";
 import { getSubscriptionInfo } from "../../lib/subscriptions.js";
+import { getEffectiveSubscriptionInfo } from "../../lib/earlyAccess.js"; // the real plan, or the early-access plan when that is better
+import { storageUsedBytes } from "../../lib/storage.js";
 import { getUsageSummary, TIER_LIMITS, TRIAL_KINDS, TOKEN_WINDOW_DAYS, limitsFor, countVoiceLast24h, messagesFreeAt, tokensFreeAt, maxUsageLast24h } from "../../lib/limits.js";
 import { PRO_ONLY_EXTS } from "../../lib/fileTypes.js";
 import { getCreditedReferralCount, getNextMilestone, referralCodeFor, inviteLinkFor } from "../../lib/referrals.js";
@@ -42,20 +44,26 @@ export default async function handler(req, res) {
     return;
   }
 
-  const info = await getSubscriptionInfo(user.id);
-  const tier = info.tier; // effective: a trial counts as the plan it unlocks
+  // info = what they get right now (a trial counts as the plan it unlocks, and so does early access); real = what they actually have.
+  const [info, real] = await Promise.all([getEffectiveSubscriptionInfo(user.id), getSubscriptionInfo(user.id)]);
+  const tier = info.tier;
   const limits = await limitsFor(user.id); // referral-bonus-aware for free tier, trial-capped during a trial
-  const [{ messagesLastHour, messagesLast24h, tokensInWindow, imagesLast30Days }, voiceUsed] = await Promise.all([
+  const [{ messagesLastHour, messagesLast24h, tokensInWindow, imagesLast30Days }, voiceUsed, storageUsed] = await Promise.all([
     getUsageSummary(user.id),
     countVoiceLast24h(user.id),
+    storageUsedBytes(user.id).catch(() => null), // a problem here must never take the usage bar down
   ]);
 
   const body = {
     isOwner: false,
     tier,
-    // What they actually pay for — "free" during a trial — so the UI keeps the
-    // Subscribe buttons visible to someone who's only trialling.
-    paidTier: info.isTrial ? "free" : tier,
+    // What they actually pay for — "free" during a trial or early access — so the UI keeps the
+    // Subscribe buttons visible to someone who's only trialling (and never offers a downgrade to someone who pays).
+    paidTier: real.isTrial ? "free" : real.tier,
+    // True while the plan above is only there because of early access (lib/earlyAccess.js): the UI says so.
+    earlyAccess: !!info.isEarlyAccess,
+    // Used / allowed storage (Settings -> Storage). null = unknown; the picker then skips its early "not enough room" warning.
+    storage: storageUsed === null ? null : { usedBytes: storageUsed, quotaBytes: limits.storageBytes ?? null },
     trial:
       info.isTrial && info.expiresAt
         ? {
@@ -100,7 +108,9 @@ export default async function handler(req, res) {
     body.max = { perDay: limits.maxPerDay, used: m.used, resetAt: m.resetAt ? m.resetAt.toISOString() : null };
   }
 
-  if (tier === "free") {
+  // Free people earn bonuses from the invite ladder; early-access people have no bonuses to earn but must still be able to invite
+  // their friends (that is the point of early access), so both get the invite link.
+  if (tier === "free" || info.isEarlyAccess) {
     const creditedReferrals = await getCreditedReferralCount(user.id);
     const nextTier = getNextMilestone(creditedReferrals);
     body.referrals = {

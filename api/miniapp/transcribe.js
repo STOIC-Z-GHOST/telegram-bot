@@ -20,10 +20,11 @@ import { allowsSharedModels } from "../../lib/dataSharing.js";
 // Base64 inflates by a third, so 3MB of audio is ~4MB on the wire — just
 // under Vercel's 4.5MB body limit.
 const MAX_VOICE_BYTES = 3 * 1024 * 1024;
-// Generous bytes-per-second ceiling (real opus/AAC voice is 2-16KB/s). Not a
+// Generous bytes-per-second ceiling (real opus/AAC voice is 2-16KB/s; 24 leaves room for a phone that records
+// 128 kbps AAC, so a clip exactly at a plan's limit is never refused as "too long"). Not a
 // precise duration check — the client reports its own length, which we don't
 // trust — it just stops someone uploading a long recording labelled "5s".
-const MAX_BYTES_PER_SECOND = 16 * 1024;
+const MAX_BYTES_PER_SECOND = 24 * 1024;
 
 export default async function handler(req, res) {
   const user = await requireTelegramUser(req, res);

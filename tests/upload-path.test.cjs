@@ -26,5 +26,20 @@ check("the send code uploads with uniqueUploadPath, never a bare file.name", /up
 check("overwriting is NOT turned on (it would let one person replace another's file)", !/allowOverwrite/.test(html));
 check("a failed upload shows a friendly message, not the storage provider's error", /Couldn't upload "\$\{file\.name\}"\. Please try again\./.test(html));
 
+
+// ---- long names in non-Latin scripts (Amharic letters are 3 bytes -> 9 characters once percent-encoded in an address)
+{
+  const amharic = "የሂሳብ አያያዝ መርሆዎች እና ልምምዶች የመጨረሻ ፈተና ጥያቄዎች እና መልሶች ለሁለተኛ ዓመት ተማሪዎች የተዘጋጀ ሙሉ ስብስብ ከ መልሶች ጋር ሰነድ.docx";
+  const p = uniqueUploadPath(amharic);
+  const [folder, name] = p.split("/");
+  check("a long Amharic name is shortened so its encoded address stays small", encodeURIComponent(name).length <= 240 && p.split("/").length === 2, `${encodeURIComponent(name).length} encoded chars`);
+  check("the file type ending survives the shortening (.docx decides what the file is)", name.endsWith(".docx"));
+  check("it is cut between whole characters (no broken letter at the end)", !/\uFFFD/.test(name) && decodeURIComponent(encodeURIComponent(name)) === name);
+  const url = `https://abc123def456ghi7.public.blob.vercel-storage.com/${folder}/${encodeURIComponent(name)}`;
+  check("the full storage address stays well under the server's 600-character limit", url.length < 400, `${url.length} chars`);
+  check("a short Amharic name is left exactly as it is", uniqueUploadPath("ፈተና.pdf").endsWith("/ፈተና.pdf"));
+  check("a long name with no extension is shortened too", encodeURIComponent(uniqueUploadPath("ሀ".repeat(110)).split("/")[1]).length <= 240);
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

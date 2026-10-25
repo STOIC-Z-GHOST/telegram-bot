@@ -88,8 +88,10 @@ import { getConversationReply, getVisionReply as getPrivateVisionReply } from ".
 import { classifyFile, ALL_FILES_SUMMARY } from "../lib/fileTypes.js";
 import { extractDocumentText, buildDocumentPrompt } from "../lib/attachments.js";
 import { transcribeAudio } from "../lib/transcribe.js";
-import { ocrToText, buildOcrPrompt } from "../lib/ocr.js";
-import { getUserTier, getPaidTier, activateSubscription, getTierPrices, setTierPrice, isDowngrade, MAX_PRICE_STARS, SUBSCRIPTION_PERIOD_SECONDS } from "../lib/subscriptions.js";
+import { buildOcrPrompt } from "../lib/ocr.js";
+import { readPdfAsText } from "../lib/pdfText.js";
+import { getPaidTier, activateSubscription, getTierPrices, setTierPrice, isDowngrade, MAX_PRICE_STARS, SUBSCRIPTION_PERIOD_SECONDS } from "../lib/subscriptions.js";
+import { getEffectiveTier as getUserTier, earlyAccessTier, earlyAccessStatus, formatEarlyAccessStatus } from "../lib/earlyAccess.js"; // the real plan, or the early-access plan if that is better
 import {
   referralCodeFor,
   inviteLinkFor,
@@ -261,6 +263,12 @@ async function getTelegramFileUrl(fileId) {
   return `https://api.telegram.org/file/bot${TELEGRAM_BOT_TOKEN}/${data.result.file_path}`;
 }
 
+// What a person sees when reading a photo or file fails. The real reason (a storage, provider or network error with internal
+// wording and sometimes a response body) is logged where the failure is caught, never shown.
+function friendlyReadError(what = "file") {
+  return `⚠️ Couldn't read that ${what} right now — please try again in a minute. If it keeps happening, try a smaller or clearer one.`;
+}
+
 async function fetchAsBase64(url) {
   const resp = await fetchWithTimeout(url, {}, 12000);
   if (!resp.ok) throw new Error(`Failed to download file: ${resp.status}`);
@@ -277,7 +285,7 @@ async function fetchAsBase64(url) {
 async function askPollinationsImage(prompt, allowShared = false) {
   // Same path as the mini app (Flux at 1024, then the defaults, then the Assist AI
   // badge) — see generateImage in lib/imagegen.js.
-  return generateImage(prompt, { allowShared }); // honoured by lib/imagegen.js (PATCH-imagegen.md)
+  return generateImage(prompt, { allowShared }); // honoured by lib/imagegen.js (no yes = Cloudflare only)
 }
 
 async function askGroq(prompt, { thinking = false } = {}) {
@@ -334,7 +342,7 @@ async function getAiReply(prompt, opts = {}) {
       return await askGemini(prompt, opts);
     } catch (err2) {
       console.error("Gemini also failed:", err2.message);
-      return { text: "⚠️ Both Groq and Gemini failed to respond just now — try again in a moment.", tokensUsed: null };
+      return { text: "⚠️ I couldn't come up with a reply just now — please try again in a moment.", tokensUsed: null };
     }
   }
 }
@@ -360,16 +368,16 @@ async function getVisionReply(prompt, base64Image, mimeType, opts = {}) {
     // MISTRAL_API_KEY), then answer from the extracted text. See lib/ocr.js.
     if (mimeType === "application/pdf") {
       try {
-        const ocr = await ocrToText(base64Image, "application/pdf");
-        if (ocr) {
-          const { text: answer } = await getAiReply(buildOcrPrompt(prompt, ocr), { allowShared: true });
+        const doc = await readPdfAsText(base64Image);
+        if (doc) {
+          const { text: answer } = await getAiReply(buildOcrPrompt(prompt, doc), { allowShared: true });
           return answer;
         }
       } catch (ocrErr) {
-        console.error("Mistral OCR fallback failed:", ocrErr.message);
+        console.error("PDF text/OCR fallback failed:", ocrErr.message);
       }
     }
-    return `⚠️ Couldn't read that file right now: ${err.message}`;
+    return friendlyReadError("file");
   }
 }
 
@@ -804,7 +812,32 @@ function secretMatches(sent, expected) {
   return crypto.timingSafeEqual(a, b);
 }
 
+// Vercel Cron calls this once a day (vercel.json -> crons) with "Authorization: Bearer <CRON_SECRET>": it deletes uploads older than
+// STORAGE_UPLOAD_DAYS and things the bot made older than STORAGE_GENERATED_DAYS (lib/storage.js). It lives in this function on
+// purpose — a separate cron endpoint would be another serverless function, and the project is held to 12.
+async function handleCleanupTask(req, res) {
+  const secret = process.env.CRON_SECRET;
+  const given = String(req.headers.authorization || "").replace(/^Bearer\s+/i, "");
+  if (!secret || !secretMatches(given, secret)) {
+    res.status(401).send("Unauthorized");
+    return;
+  }
+  try {
+    const { cleanupExpiredFiles } = await import("../lib/storage.js");
+    const result = await cleanupExpiredFiles();
+    console.log("storage cleanup:", JSON.stringify(result));
+    res.status(200).json(result);
+  } catch (err) {
+    console.error("storage cleanup failed:", err);
+    res.status(500).send("cleanup failed");
+  }
+}
+
 export default async function handler(req, res) {
+  if (req.method === "GET" && req.query?.task === "cleanup") {
+    await handleCleanupTask(req, res);
+    return;
+  }
   // Anything that isn't Telegram POSTing an update (e.g. you opening the
   // URL in a browser) just gets a plain 200 so it doesn't look broken.
   if (req.method !== "POST") {
@@ -1038,6 +1071,18 @@ export default async function handler(req, res) {
     return;
   }
 
+  // Owner-only: "/early" says where early access stands (lib/earlyAccess.js): on or off, places taken, plan, end date.
+  if (isOwner(chatId) && /^\/early(?:@\w+)?\s*$/i.test(text || "")) {
+    try {
+      await sendTelegramMessage(chatId, formatEarlyAccessStatus(await earlyAccessStatus()));
+    } catch (err) {
+      console.error("/early failed:", err);
+      await sendTelegramMessage(chatId, "⚠️ Couldn't read early access status — see the Vercel logs.");
+    }
+    res.status(200).send("OK");
+    return;
+  }
+
   // Owner-only: "/limits" asks every provider which models your keys can use and what limits they report
   // (lib/providerLimits.js). It runs HERE, inside the deployed bot, because Vercel never lets you read back a variable
   // marked Sensitive — so a local script can't get the keys. Nothing it sends contains a key.
@@ -1077,7 +1122,11 @@ export default async function handler(req, res) {
       await sendTelegramMessage(chatId, "You're the owner — no limits to raise.");
     } else {
       const prices = await getTierPrices();
-      const tierLine = currentTier === "free" ? "You're currently on the Free tier." : `You're currently on ${currentTier[0].toUpperCase()}${currentTier.slice(1)}.`;
+      const early = await earlyAccessTier(chatId);
+      const planLabel = `${currentTier[0].toUpperCase()}${currentTier.slice(1)}`;
+      const tierLine = early && early === currentTier
+        ? `You're on ${planLabel} through early access — thank you for being one of the first people here. Early access won't last forever, so pick a plan below if you'd like to keep these limits afterwards.`
+        : currentTier === "free" ? "You're currently on the Free tier." : `You're currently on ${planLabel}.`;
       await sendTelegramMessageWithKeyboard(
         chatId,
         `${tierLine} Pick a plan — billed monthly in Telegram Stars, starting today, renewing automatically every 30 days:`,
@@ -1144,7 +1193,7 @@ export default async function handler(req, res) {
       await sendTelegramMessage(chatId, answer);
     } catch (err) {
       console.error("Vision pipeline failed:", err.message);
-      await sendTelegramMessage(chatId, `⚠️ Couldn't process that image: ${err.message}`);
+      await sendTelegramMessage(chatId, friendlyReadError("image"));
     }
     res.status(200).send("OK");
     return;
@@ -1228,7 +1277,7 @@ export default async function handler(req, res) {
       }
     } catch (err) {
       console.error("Document pipeline failed:", err.message);
-      await sendTelegramMessage(chatId, `⚠️ Couldn't process that file: ${err.message}`);
+      await sendTelegramMessage(chatId, friendlyReadError("file"));
     }
     res.status(200).send("OK");
     return;

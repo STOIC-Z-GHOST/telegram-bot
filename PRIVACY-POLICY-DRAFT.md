@@ -29,15 +29,17 @@ Please do not send passwords, ID or bank details, health records, or other peopl
 
 ## 5. Your choices
 - Change Extended models any time in Settings (or `/privacy` in the chat). It applies to messages you send afterwards; it cannot take back what was already sent.
-- Delete chats in the app (this also deletes the files attached to them). Delete saved memories in Settings.
+- Delete chats in the app (this also deletes the files attached to them). Delete your files in Settings -> Storage. Delete saved memories in Settings.
 - Ask us to see, correct or delete your data, or to withdraw your consent: [contact]. We answer within [30] days.
 
 ## 6. Age
 Extended models is for people 18 and over. [State the minimum age for the bot itself with your lawyer.]
 
 ## 7. Keeping data safe, and how long
-Chats and files are stored with [Neon (database) and Vercel (hosting and file storage)]. Access is limited to [you]. We keep your data
-until you delete it or ask us to, and usage records for [12] months. [Confirm with your lawyer.]
+Chats and files are stored with [Neon (database) and Vercel (hosting and file storage)]. Access is limited to [you]. We keep your chats
+until you delete them or ask us to. Photos and files you send are deleted automatically after [7] days, and things the bot makes for you
+after [30] days, and any file over [50] MB after [3] days; you can delete any of them yourself at any time in Settings -> Storage. Usage records are kept for [12] months.
+[Confirm all of this with your lawyer.]
 
 ## 8. Changes
 If this policy or the Extended models wording changes in a way that matters, we will ask you again before using your messages in the new way.

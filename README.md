@@ -369,10 +369,10 @@ are treated as **no**. In the mini app it is a Settings row: the name with a "Mo
 |---|---|---|
 | Text chat | private models only (Groq, Cloudflare, Mistral) | the same, plus the shared ones as extra backups |
 | Extra tier | falls back to Max, with a note | Gemini Flash models first |
-| Photos and PDFs | Cloudflare's vision model; a PDF goes through Mistral OCR to the private text models | Gemini first, then the private/shared vision chain |
+| Photos and PDFs | Photos: Cloudflare's vision model, then Mistral's (`MISTRAL_VISION_MODEL`, default the 8B Ministral). A PDF: its own text is read on our server (`lib/pdfText.js`: free, instant, nothing leaves the server); only a scan (a PDF that is pictures of pages) goes to Mistral OCR; either way the private text models answer | Gemini first, then the private/shared vision chain |
 | Voice notes | Groq Whisper only | Groq Whisper, Gemini as the backup |
 | Web search | search words only go to SearXNG/Tavily; Gemini grounding is skipped | Gemini grounding is the last resort |
-| Image prompts | the private image service only (needs the lib/imagegen.js patch, see PATCH-imagegen.md) | Pollinations as the fallback |
+| Image prompts | Cloudflare only (`generateImage(prompt, { allowShared })` in `lib/imagegen.js`; if it is down or out of allowance the person is told to try again) | Pollinations as the fallback |
 | File creation and editing | private models only (as before) | private models only (not changed) |
 
 **Which providers are "shared"?** `lib/dataUse.js`. Default `SHARED_DATA_PROVIDERS=gemini,openrouter,zai`. Anything the file
@@ -416,6 +416,55 @@ evaluation-only, SambaNova allows 20 requests a day per model, Hyperbolic and Ce
 Models was shut down by GitHub on 30 Jul 2026, ModelScope is non-commercial and needs a verified Alibaba account, SiliconFlow's
 free models need China real-name verification, and the keyless services (Pollinations, LLM7) give no promise about your data.
 Gemini, OpenRouter's free routes and Z.ai are already the shared group.
+
+## Early access (the first few people get everything)
+
+For a launch where the first impression matters most. While `EARLY_ACCESS_SLOTS` is above 0, the first people to use the bot get
+`EARLY_ACCESS_PLAN` (Premium by default): every tier, Premium limits, Premium storage. Everyone after that starts on Free. Nothing in
+anyone's subscription is touched: early access is a layer on top of the real plan (`lib/earlyAccess.js`).
+
+| To do this | Set |
+|---|---|
+| Turn it on for the first 20 people | `EARLY_ACCESS_SLOTS=20` |
+| Stop letting new people in, keep the ones already in | `EARLY_ACCESS_SLOTS` = the number already in (`/early` shows it) |
+| End it for everyone (back to Free / their real plan) | `EARLY_ACCESS_SLOTS=0` |
+| End it automatically on a date | `EARLY_ACCESS_ENDS=2026-12-01` |
+| Move everyone from Premium to Pro | `EARLY_ACCESS_PLAN=pro` |
+
+Redeploy after changing a variable. The owner command `/early` says where it stands. People who pay for a plan that is as good or better
+simply keep their paid plan; early access never lowers anything. `/upgrade` tells early-access people that they are on early access.
+Run `db/migrate_early_access_v17.sql` once before setting `EARLY_ACCESS_SLOTS`. If the table is missing or the database is down, nobody
+gets early access (it fails safe). Keep the number small while the files live on Vercel's free Blob store (1 GB, 2,000 uploads a month).
+In the mini app an early-access person's plan reads "Premium (early access)", the menu badge says "Early access", the Plan sheet explains it,
+Subscribe stays available, and the invite link is shown (early access exists to start word of mouth). `api/miniapp/usage.js` and
+`api/miniapp/blob-upload.js` use the same early-access plan as everything else.
+
+## Storage (quota, delete your own files, daily cleanup)
+
+Files live in Vercel Blob. Each person has a quota (Free 20 MB, Pro 100 MB, Premium 250 MB; `STORAGE_FREE_MB` / `STORAGE_PRO_MB` /
+`STORAGE_PREMIUM_MB`). The owner has none.
+- **Settings -> Storage** shows what you use of your quota, lists every file (uploads and things the bot made, with size, chat and when it
+  will be deleted), and lets you select and delete any of them. A deleted file stays in its chat as "🗑️ name — removed".
+- **A full store** refuses new uploads and stops the bot making images and files, with a message that points to Settings -> Storage. The
+  browser's own file sizes are not trusted: the real size is read back from storage. It is checked in three places: the file picker (instant,
+  from the usage numbers), the upload gate in `blob-upload.js` (before any bytes are uploaded; a single file can never be larger than the space
+  left), and again when the message is sent.
+- **Big files go sooner.** Anything over `STORAGE_LARGE_MB` (50) is deleted after `STORAGE_LARGE_DAYS` (3) days, whatever its source; the Storage
+  screen shows the shorter date and says so. (Free uploads are capped at 5 MB, so this is for Pro, Premium and early access.)
+- **Refused messages clean up after themselves.** The browser uploads first, so a message refused for any reason (rate limit, quota, wrong type)
+  used to leave its files in storage. Files that no message points at are now deleted (never a file a chat already uses).
+- **Daily cleanup.** Uploads older than `STORAGE_UPLOAD_DAYS` (7) and things the bot made older than `STORAGE_GENERATED_DAYS` (30) are deleted.
+  It runs inside the webhook function (a separate cron endpoint would be a 13th serverless function). Add this to `vercel.json` (merge
+  with what is there) and set `CRON_SECRET` in Vercel; Vercel Cron sends it as a bearer token:
+
+      { "crons": [ { "path": "/api/telegram-webhook?task=cleanup", "schedule": "0 3 * * *" } ] }
+
+  Hobby allows one run a day. Each run handles up to 300 messages; if there is more it simply continues the next day. Check the log line
+  "storage cleanup:" in Vercel. No migration is needed for storage (it uses the existing messages table).
+- **Limits to know about.** Vercel's free Hobby plan allows 1 GB of storage and 2,000 uploads a month for the whole bot (each upload and each
+  generated image or file is one). The quota and cleanup keep storage flat; they cannot raise the upload limit. Hobby is also for
+  non-commercial use: move to Pro when you start charging.
+- Files uploaded before this version have no recorded size, so they count as 0 until they expire; new ones are measured.
 
 ## Access control
 
