@@ -27,13 +27,7 @@ migrate_search_cache_v12.sql
 migrate_chat_pinning_v13.sql
 migrate_voice_seconds_v14.sql
 migrate_plan_trials_v15.sql 
-migrate_data_sharing_v16.sql
 migrate_early_access_v17.sql
-CHANGES-EXTENDED-MODELS.md
-HANDOFF.md
-PATCH-imagegen.md
-PRIVACY-POLICY-DRAFT.md
-
-
+migrate_data_sharing_v16.sql
 .vercel
 .env*
