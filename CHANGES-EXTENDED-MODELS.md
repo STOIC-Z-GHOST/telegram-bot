@@ -8,7 +8,7 @@ not seen earlier. Read README.md -> "Extended models", "Early access" and "Stora
 1. `npm install` (new dependency: `unpdf`, for reading PDFs on the server).
 2. In the Neon SQL editor run `db/migrate_data_sharing_v16.sql` and `db/migrate_early_access_v17.sql` (both safe to run twice).
 3. In Vercel set `CRON_SECRET` (any long random string) and, when you want early access, `EARLY_ACCESS_SLOTS` (see README -> Early access).
-   `vercel.json` already contains the daily cleanup cron. Delete `OPENROUTER_MAX_MODEL` and `OPENROUTER_IN_STANDARD` if still set.
+   `vercel.json` already contains the daily cleanup cron. `OPENROUTER_MAX_MODEL` and `OPENROUTER_IN_STANDARD` are safe to keep (OpenRouter only serves people who turned Extended models on); delete them only if you don't want those routes. If /health shows the Cloudflare Max model as "not allowed on your plan (403)", set `CF_MAX_MODEL=off`.
 4. Deploy, then with a brand-new Telegram account (Extended models off): `/start`, send a digital PDF, a scanned PDF or photo, a voice note and the
    exam .docx; open Settings -> Storage; then run `/health live`, `/early` and `/limits` as owner.
 
@@ -55,7 +55,7 @@ Test: `node --no-deprecation tests/docxText.test.mjs` (17 checks). No new depend
   now cut off after 2,000 empty rows in a row.
 - Photos: for anyone who has not turned Extended models on, Cloudflare was the ONLY photo reader. Mistral (8B Ministral, training switch off)
   is now the second private reader. Unverified: whether your Mistral key accepts images on that model. `/health live` now sends it the test
-  image; if it says the model rejected the image, set MISTRAL_VISION_MODEL=ministral-14b-2512 or ministral-3b-2512.
+  image (confirmed by /limits: the Ministral models show "vision"). The value must be a model id with no spaces; a description pasted in its place is now ignored with a warning and /health flags it. If a model id is ever rejected, set MISTRAL_VISION_MODEL=ministral-14b-2512.
 - DM bot: a failed photo or file used to print the raw internal error into the chat (storage or provider wording, sometimes a response
   body), and one reply said "Both Groq and Gemini failed". Both are now plain, friendly messages; the real reason is still logged.
 - Tests: `node --no-deprecation tests/media.test.mjs` (23 checks); dataSharing 46; health 170 (its Mistral count now includes the photo row).
@@ -67,6 +67,7 @@ Test: `node --no-deprecation tests/docxText.test.mjs` (17 checks). No new depend
 - Storage (lib/storage.js, README -> Storage): per-person quota, Settings -> Storage to see and delete your own files, removed files shown as
   "removed" in old chats, refused uploads cleaned up, and a daily cleanup (inside the webhook function, via Vercel Cron: add the crons entry to
   vercel.json and set CRON_SECRET). Uploaded files are measured from storage, not from what the browser claims. No storage migration.
+- /health now lists CRON_SECRET and the new settings, and flags any *_MODEL setting that contains a space. Test: tests/envGuard.test.mjs (8).
 - Tests: `tests/earlyAccess.test.mjs` (28), `tests/storage.test.mjs` (43, runs real SQL in an in-process Postgres: `npm install --no-save
   @electric-sql/pglite`), `tests/ui-storage.test.cjs` (31, real page in jsdom).
 - Now that usage.js, blob-upload.js and chats.js were uploaded: usage.js shows the early-access plan (label, badge, Plan sheet), keeps Subscribe visible,
